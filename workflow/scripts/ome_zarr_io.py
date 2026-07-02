@@ -12,6 +12,7 @@ from typing import Iterable
 
 TIFF_SUFFIXES = {".tif", ".tiff"}
 OME_ZARR_SUFFIX = ".ome.zarr"
+PYRAMID_DOWNSAMPLE_FACTORS = (1, 2, 4, 8, 16)
 
 
 def log_progress(message: str) -> None:
@@ -49,7 +50,16 @@ def discover_image_volumes(input_dir: Path | str) -> list[Path]:
     return sorted(paths, key=lambda path: path.name)
 
 
-def multiscales_metadata(layer_name: str) -> dict:
+def multiscales_metadata(layer_name: str, downsample_factors: Iterable[int] = PYRAMID_DOWNSAMPLE_FACTORS) -> dict:
+    datasets = [
+        {
+            "path": str(level),
+            "coordinateTransformations": [
+                {"type": "scale", "scale": [1, int(factor), int(factor)]}
+            ],
+        }
+        for level, factor in enumerate(downsample_factors)
+    ]
     return {
         "multiscales": [
             {
@@ -60,17 +70,48 @@ def multiscales_metadata(layer_name: str) -> dict:
                     {"name": "y", "type": "space"},
                     {"name": "x", "type": "space"},
                 ],
-                "datasets": [
-                    {
-                        "path": "0",
-                        "coordinateTransformations": [
-                            {"type": "scale", "scale": [1, 1, 1]}
-                        ],
-                    }
-                ],
+                "datasets": datasets,
             }
         ]
     }
+
+
+def downsample_xy(array, factor: int):
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError(f"downsample factor must be >= 1, got {factor}")
+    if factor == 1:
+        return array
+    return array[:, ::factor, ::factor]
+
+
+def _normalise_chunks(chunks, shape: tuple[int, int, int]) -> tuple[int, int, int]:
+    if chunks is None:
+        return (min(16, shape[0]), min(256, shape[1]), min(256, shape[2]))
+    normalised = []
+    for axis_chunks, axis_size in zip(chunks, shape, strict=True):
+        if isinstance(axis_chunks, (tuple, list)):
+            chunk_size = int(axis_chunks[0])
+        else:
+            chunk_size = int(axis_chunks)
+        normalised.append(max(1, min(chunk_size, int(axis_size))))
+    return tuple(normalised)
+
+
+def _downsampled_chunks(base_chunks: tuple[int, int, int], shape: tuple[int, int, int], factor: int) -> tuple[int, int, int]:
+    return (
+        max(1, min(int(base_chunks[0]), int(shape[0]))),
+        max(1, min(max(1, int(base_chunks[1]) // int(factor)), int(shape[1]))),
+        max(1, min(max(1, int(base_chunks[2]) // int(factor)), int(shape[2]))),
+    )
+
+
+def _downsampled_shape_xy(shape: tuple[int, int, int], factor: int) -> tuple[int, int, int]:
+    return (
+        int(shape[0]),
+        max(1, ((int(shape[1]) - 1) // int(factor)) + 1),
+        max(1, ((int(shape[2]) - 1) // int(factor)) + 1),
+    )
 
 
 def open_ome_zarr_array(path: Path | str, mode: str = "r"):
@@ -125,6 +166,51 @@ def create_ome_zarr_array(
     )
 
 
+def write_downsampled_pyramid(
+    path: Path | str,
+    *,
+    max_downsample: int = 16,
+    downsample_factors: Iterable[int] = PYRAMID_DOWNSAMPLE_FACTORS,
+) -> None:
+    try:
+        import zarr
+    except ImportError as exc:
+        raise RuntimeError("Missing required dependency 'zarr' for OME-Zarr pyramid generation") from exc
+
+    zarr_path = Path(path)
+    source = zarr.open(str(zarr_path / "0"), mode="r")
+    source_shape = tuple(int(axis) for axis in source.shape)
+    if len(source_shape) != 3:
+        raise ValueError(f"OME-Zarr pyramid source must be 3-D, got shape {source_shape}")
+    source_chunks = _normalise_chunks(getattr(source, "chunks", None), source_shape)
+    dtype = getattr(source, "dtype", None)
+
+    for level, factor in enumerate(downsample_factors):
+        factor = int(factor)
+        if level == 0 or factor == 1:
+            continue
+        if factor > int(max_downsample):
+            continue
+        shape = _downsampled_shape_xy(source_shape, factor)
+        chunks = _downsampled_chunks(source_chunks, shape, factor)
+        log_progress(
+            "Writing OME-Zarr pyramid level: "
+            f"path={zarr_path / str(level)}, downsample={factor}x, "
+            f"shape={shape}, chunks={chunks}"
+        )
+        target = zarr.open(
+            str(zarr_path / str(level)),
+            mode="w",
+            shape=shape,
+            chunks=chunks,
+            dtype=dtype,
+            compressor=None,
+        )
+        for z_start in range(0, shape[0], chunks[0]):
+            z_stop = min(z_start + chunks[0], shape[0])
+            target[z_start:z_stop, :, :] = source[z_start:z_stop, ::factor, ::factor]
+
+
 def write_ome_zarr_array(path: Path | str, array, *, chunks=None, layer_name: str | None = None) -> Path:
     shape = tuple(int(axis) for axis in array.shape)
     if len(shape) != 3:
@@ -145,5 +231,6 @@ def write_ome_zarr_array(path: Path | str, array, *, chunks=None, layer_name: st
         layer_name=layer_name,
     )
     zarr_array[:] = array
+    write_downsampled_pyramid(output)
     log_progress(f"Finished OME-Zarr volume: {output.resolve()}")
     return output.resolve()

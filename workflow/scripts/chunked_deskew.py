@@ -27,6 +27,7 @@ from ome_zarr_io import (
     is_ome_zarr_path,
     log_progress,
     open_ome_zarr_array,
+    write_downsampled_pyramid,
 )
 
 
@@ -487,6 +488,8 @@ def _write_top_shear(
                     x_start, block = future.result()
                     write_buffer[int(x_start)] = block
                     completed += 1
+    if write_ome_zarr:
+        write_downsampled_pyramid(output_path)
     log_progress(
         f"Finished top-view deskew output: {output_path} "
         f"in {time.perf_counter() - start_time:.2f}s"
@@ -620,6 +623,8 @@ def _write_top_shear_gpu(
             if x_stop % 50 == 0 or x_stop == x_size:
                 log_progress(f"Wrote GPU top-view page {x_stop}/{x_size}")
 
+    if write_ome_zarr:
+        write_downsampled_pyramid(output_path)
     log_progress(
         f"Finished GPU top-view deskew output: {output_path} "
         f"in {time.perf_counter() - start_time:.2f}s"
