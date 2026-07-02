@@ -14,6 +14,11 @@ estimation and GPU deconvolution are needed.
    normalizes supported images to `input_zarr/*.ome.zarr`.
 3. `DESKEW` writes deskewed OME-Zarr volumes under `Top_shear/`.
 
+The deskew runtime includes the deconvolution Python/CUDA dependencies so an
+integrated pipeline can pass the built `deskew_runtime` directory to
+`deconvolution-gpu --decon_runtime_dir` and avoid building a second conda
+environment.
+
 ## Manual Run
 
 ```bash

@@ -28,6 +28,14 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("deskew_backend = 'gpu'", config_text)
         self.assertNotIn("psf_mode", config_text)
 
+    def test_deskew_runtime_includes_decon_dependencies(self):
+        conda_text = (ROOT / "workflow/envs/deskew-conda.txt").read_text(encoding="utf-8")
+        pip_text = (ROOT / "workflow/envs/deskew-pip-requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("cudadecon=0.7.0", conda_text)
+        self.assertIn("pycudadecon=0.5.1", conda_text)
+        self.assertIn("psfmodels", pip_text)
+
 
 if __name__ == "__main__":
     unittest.main()
