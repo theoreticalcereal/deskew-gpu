@@ -1,0 +1,86 @@
+name: '3d_deskew_gpu'
+author: 'Ricky Wang'
+email: 'ricky.wang@utsouthwestern.edu'
+title: '3D GPU Deskew Workflow'
+description: |
+  This workflow normalizes selected ctASLM/light-sheet microscopy image files
+  to OME-Zarr and runs GPU-accelerated deskewing. Use the separate
+  deconvolution-gpu package for blind PSF estimation and deconvolution.
+
+citation: |
+  Please acknowledge our contribution:
+  This research was supported in part by the computational resources provided by
+  the BioHPC supercomputing facility located in the Lyda Hill Department of
+  Bioinformatics, UT Southwestern Medical Center.
+
+minimum_astrocyte_version: '2.1.0'
+nextflow_version: '24.10.0'
+nextflow_config: 'biohpc.config'
+container: 'singularity'
+singularity_version: '3.9.9'
+
+documentation_files:
+  - [ 'index.md', '3D GPU Deskew Help' ]
+  - [ 'workflow-overview.md', 'Workflow Overview' ]
+  - [ 'deskew-process.md', 'Deskew Process' ]
+  - [ 'profiles-and-parameters.md', 'Profiles and Parameters' ]
+  - [ 'workflow-output.md', 'workflow/output - Output from the Workflow' ]
+  - [ 'outputs-and-troubleshooting.md', 'Outputs and Troubleshooting' ]
+
+workflow_modules:
+  - 'lmod/8.4'
+  - 'anaconda3/2023.09-0'
+
+workflow_parameters:
+  - id: input
+    type: files
+    required: true
+    min: 1
+    description: Select image files to deskew.
+    regex: ".*(\\.tif|\\.tiff|\\.czi|\\.nd2|\\.lif|\\.h5|\\.hdf5|\\.ome\\.zarr|\\.TIF|\\.TIFF|\\.CZI|\\.ND2|\\.LIF|\\.H5|\\.HDF5|\\.OME\\.ZARR)$"
+
+  - id: output_dir
+    type: string
+    required: true
+    default: './output'
+    description: Directory where deskewed outputs are published.
+
+  - id: dx
+    type: real
+    required: true
+    min: 0
+    description: Deskew voxel size in X/Y, in microns.
+
+  - id: dz
+    type: real
+    required: true
+    min: 0
+    description: Deskew voxel size in Z, in microns.
+
+  - id: angle
+    type: real
+    required: false
+    default: 40
+    description: Deskew shear angle in degrees.
+
+  - id: flip
+    type: integer
+    required: false
+    default: 1
+    description: Deskew flip/orientation flag.
+
+  - id: deskew_backend
+    type: select
+    required: false
+    default: 'gpu'
+    description: Deskew implementation backend.
+    choices:
+      - [ 'gpu', 'GPU deskew' ]
+      - [ 'cpu_blocked', 'CPU blocked reference' ]
+
+  - id: deskew_x_block
+    type: integer
+    required: false
+    default: 1
+    min: 1
+    description: Number of adjacent output X pages computed per CPU deskew task.

@@ -1,0 +1,14 @@
+python=3.10
+pip
+cudatoolkit=11.8
+numpy
+numba
+tifffile=2025.5.10
+zarr=2.18.3
+numcodecs
+h5py
+dask
+distributed
+dask-jobqueue
+psutil
+scipy
