@@ -38,12 +38,18 @@ workflow_parameters:
     min: 1
     description: Select image files to deskew.
     regex: ".*(\\.tif|\\.tiff|\\.czi|\\.nd2|\\.lif|\\.h5|\\.hdf5|\\.ome\\.zarr|\\.TIF|\\.TIFF|\\.CZI|\\.ND2|\\.LIF|\\.H5|\\.HDF5|\\.OME\\.ZARR)$"
-
-  - id: output_dir
-    type: string
-    required: true
-    default: './output'
-    description: Directory where deskewed outputs are published.
+  
+  - id: pyramid_max_downsample
+    type: select
+    required: false
+    default: '16'
+    description: Largest XY OME-Zarr pyramid downsample factor to write.
+    choices:
+      - [ '1', 'Full resolution only' ]
+      - [ '2', 'Up to 2x' ]
+      - [ '4', 'Up to 4x' ]
+      - [ '8', 'Up to 8x' ]
+      - [ '16', 'Up to 16x' ]
 
   - id: dx
     type: real
@@ -59,8 +65,8 @@ workflow_parameters:
 
   - id: angle
     type: real
-    required: false
-    default: 40
+    required: true
+    default: 0
     description: Deskew shear angle in degrees.
 
   - id: flip
@@ -71,13 +77,12 @@ workflow_parameters:
 
   - id: deskew_backend
     type: select
-    required: false
+    required: true
     default: 'gpu'
     description: Deskew implementation backend.
     choices:
       - [ 'gpu', 'GPU deskew' ]
-      - [ 'cuda', 'CUDA deskew' ]
-      - [ 'cpu_blocked', 'CPU blocked reference' ]
+      - [ 'cpu_blocked', 'CPU blocked reference (SLOW)' ]
 
   - id: z_chunk
     type: integer
@@ -92,18 +97,6 @@ workflow_parameters:
     default: 64
     min: 1
     description: Number of output X pages processed in each GPU batch.
-
-  - id: pyramid_max_downsample
-    type: select
-    required: false
-    default: '16'
-    description: Largest XY OME-Zarr pyramid downsample factor to write.
-    choices:
-      - [ '1', 'Full resolution only' ]
-      - [ '2', 'Up to 2x' ]
-      - [ '4', 'Up to 4x' ]
-      - [ '8', 'Up to 8x' ]
-      - [ '16', 'Up to 16x' ]
 
   - id: deskew_runtime_dir
     type: string
