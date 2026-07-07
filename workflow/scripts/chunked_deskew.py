@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
-from concurrent import futures
 import math
 from pathlib import Path
 import shutil
 import time
-from typing import Callable
 
 import numpy as np
 import tifffile
@@ -88,9 +86,15 @@ def _materialize_plane(volume_zyx, z_index: int) -> np.ndarray:
     return np.asarray(_compute_lazy_array(volume_zyx[int(z_index)]))
 
 
-def _materialize_volume(volume_zyx) -> np.ndarray:
-    log_progress("Materializing lazy input volume for GPU transfer")
-    return np.ascontiguousarray(_compute_lazy_array(volume_zyx))
+def _materialize_volume(
+    volume_zyx,
+    message: str = "Materializing lazy input volume for GPU transfer",
+) -> np.ndarray:
+    log_progress(message)
+    volume = np.asarray(_compute_lazy_array(volume_zyx))
+    if volume.dtype.byteorder not in ("=", "|"):
+        volume = volume.astype(volume.dtype.newbyteorder("="), copy=False)
+    return np.ascontiguousarray(volume)
 
 
 def _resize_source_z(output_z: np.ndarray, source_z_size: int, scaled_z_size: int) -> np.ndarray:
@@ -129,28 +133,8 @@ def _build_rotation_lookup(
     return src_y_i, src_x_i, valid
 
 
-def _iter_x_blocks(x_size: int, deskew_x_block: int):
-    block_size = max(1, int(deskew_x_block))
-    for start in range(0, max(0, int(x_size)), block_size):
-        yield start, min(start + block_size, int(x_size))
-
-
-def _flush_ready_blocks(
-    write_buffer: dict[int, np.ndarray],
-    next_write: int,
-    write_page: Callable[[int, np.ndarray], None],
-) -> tuple[int, float]:
-    write_start = time.perf_counter()
-    while next_write in write_buffer:
-        block = write_buffer.pop(next_write)
-        for local_x, page in enumerate(block):
-            write_page(next_write + local_x, page)
-        next_write += int(block.shape[0])
-    return next_write, time.perf_counter() - write_start
-
-
 def _resolve_deskew_backend(value: str) -> str:
-    backend = str(value or "gpu").strip().lower().replace("-", "_")
+    backend = str(value or "cpu_blocked").strip().lower().replace("-", "_")
     aliases = {
         "gpu": "gpu",
         "cuda": "gpu",
@@ -159,7 +143,7 @@ def _resolve_deskew_backend(value: str) -> str:
         "cpu_block": "cpu_blocked",
     }
     if backend not in aliases:
-        raise ValueError("deskew_backend must be one of: gpu, cpu_blocked")
+        raise ValueError("deskew_backend must be one of: gpu, cuda, cpu, cpu_blocked")
     return aliases[backend]
 
 
@@ -295,9 +279,7 @@ def _write_top_shear(
     angle: float,
     flip: int,
     z_chunk: int,
-    deskew_workers: int,
-    deskew_prefetch: int,
-    deskew_x_block: int,
+    pyramid_max_downsample: int,
 ) -> tuple[int, int, int]:
     start_time = time.perf_counter()
     z_size, y_size, x_size = (int(v) for v in volume_zyx.shape)
@@ -329,6 +311,7 @@ def _write_top_shear(
             chunks=(1, min(256, shear_y), min(256, scaled_z)),
             dtype=np.dtype("uint16"),
             layer_name=image_stem(output_path),
+            max_downsample=int(pyramid_max_downsample),
         )
         writer_context = nullcontext()
         writer = None
@@ -401,20 +384,6 @@ def _write_top_shear(
         )
         return x_start, block
 
-    deskew_workers = max(1, int(deskew_workers))
-    deskew_prefetch = max(1, int(deskew_prefetch))
-    deskew_prefetch = max(deskew_workers, deskew_prefetch)
-    deskew_x_block = max(1, int(deskew_x_block))
-    pending_block_limit = max(deskew_workers, math.ceil(deskew_prefetch / deskew_x_block))
-    x_blocks = list(_iter_x_blocks(x_size, deskew_x_block))
-    print(
-        f"  Chunked deskew scheduler: workers={deskew_workers}, "
-        f"prefetch_pages={deskew_prefetch}, x_block={deskew_x_block}, "
-        f"pending_block_limit={pending_block_limit}, "
-        f"blocks={len(x_blocks)}, pages={x_size}",
-        flush=True,
-    )
-
     def write_page(page_index: int, page: np.ndarray) -> None:
         if zarr_output is not None:
             zarr_output[page_index, :, :] = page
@@ -426,70 +395,24 @@ def _write_top_shear(
                 contiguous=True,
             )
 
+    print(
+        "  CPU deskew scheduler: mode=page_serial, pages are computed and written one at a time",
+        flush=True,
+    )
     with writer_context as writer:
-        pending_blocks: set[futures.Future[tuple[int, np.ndarray]]] = set()
-        write_buffer: dict[int, np.ndarray] = {}
-        next_submit = 0
-        next_write = 0
-        completed = 0
-        last_heartbeat = time.perf_counter()
-        heartbeat_seconds = 60.0
-
-        with futures.ThreadPoolExecutor(max_workers=deskew_workers) as executor:
-            while next_write < x_size:
-                submitted_before = next_submit
-                while next_submit < len(x_blocks) and len(pending_blocks) < pending_block_limit:
-                    x_start, x_stop = x_blocks[next_submit]
-                    pending_blocks.add(executor.submit(compute_block, x_start, x_stop))
-                    next_submit += 1
-                if next_submit > submitted_before:
-                    first_start = x_blocks[submitted_before][0]
-                    last_stop = x_blocks[next_submit - 1][1]
-                    print(
-                        f"  Submitted deskew blocks {submitted_before + 1}-{next_submit}/"
-                        f"{len(x_blocks)} pages {first_start + 1}-{last_stop}/"
-                        f"{x_size}; pending={len(pending_blocks)}, completed={completed}",
-                        flush=True,
-                    )
-
-                write_before = next_write
-                next_write, write_seconds = _flush_ready_blocks(write_buffer, next_write, write_page)
-                if next_write > write_before:
-                    print(
-                        f"  Wrote top-view pages {write_before + 1}-{next_write}/"
-                        f"{x_size}: write={write_seconds:.2f}s",
-                        flush=True,
-                    )
-                    if next_write % 50 == 0 or next_write == x_size:
-                        log_progress(f"Wrote top-view page {next_write}/{x_size}")
-
-                if next_write >= x_size:
-                    break
-
-                done, pending_blocks = futures.wait(
-                    pending_blocks,
-                    timeout=heartbeat_seconds,
-                    return_when=futures.FIRST_COMPLETED,
-                )
-                if not done:
-                    now = time.perf_counter()
-                    if now - last_heartbeat >= heartbeat_seconds:
-                        print(
-                            f"  Chunked deskew heartbeat: submitted_blocks={next_submit}/"
-                            f"{len(x_blocks)}, completed_blocks={completed}, "
-                            f"written_pages={next_write}/{x_size}, pending={len(pending_blocks)}, "
-                            f"buffered={len(write_buffer)}",
-                            flush=True,
-                        )
-                        last_heartbeat = now
-                    continue
-
-                for future in done:
-                    x_start, block = future.result()
-                    write_buffer[int(x_start)] = block
-                    completed += 1
+        for x_out in range(x_size):
+            _, block = compute_block(x_out, x_out + 1)
+            write_start = time.perf_counter()
+            write_page(x_out, block[0])
+            write_seconds = time.perf_counter() - write_start
+            print(
+                f"  Wrote top-view page {x_out + 1}/{x_size}: write={write_seconds:.2f}s",
+                flush=True,
+            )
+            if (x_out + 1) % 50 == 0 or (x_out + 1) == x_size:
+                log_progress(f"Wrote top-view page {x_out + 1}/{x_size}")
     if write_ome_zarr:
-        write_downsampled_pyramid(output_path)
+        write_downsampled_pyramid(output_path, max_downsample=int(pyramid_max_downsample))
     log_progress(
         f"Finished top-view deskew output: {output_path} "
         f"in {time.perf_counter() - start_time:.2f}s"
@@ -506,6 +429,7 @@ def _write_top_shear_gpu(
     angle: float,
     flip: int,
     deskew_prefetch: int,
+    pyramid_max_downsample: int,
 ) -> tuple[int, int, int]:
     start_time = time.perf_counter()
     cuda, kernel = _load_gpu_kernel()
@@ -539,6 +463,7 @@ def _write_top_shear_gpu(
             chunks=(1, min(256, shear_y), min(256, scaled_z)),
             dtype=np.dtype("uint16"),
             layer_name=image_stem(output_path),
+            max_downsample=int(pyramid_max_downsample),
         )
         writer_context = nullcontext()
         writer = None
@@ -624,7 +549,7 @@ def _write_top_shear_gpu(
                 log_progress(f"Wrote GPU top-view page {x_stop}/{x_size}")
 
     if write_ome_zarr:
-        write_downsampled_pyramid(output_path)
+        write_downsampled_pyramid(output_path, max_downsample=int(pyramid_max_downsample))
     log_progress(
         f"Finished GPU top-view deskew output: {output_path} "
         f"in {time.perf_counter() - start_time:.2f}s"
@@ -643,9 +568,8 @@ def run_chunked_deskew(
     output_dir: str,
     deskew_backend: str,
     z_chunk: int,
-    deskew_workers: int,
     deskew_prefetch: int,
-    deskew_x_block: int,
+    pyramid_max_downsample: int,
 ) -> None:
     run_start = time.perf_counter()
     input_dir = _selected_input_dir(image_path, cell_name)
@@ -675,6 +599,7 @@ def run_chunked_deskew(
                 angle=float(angle),
                 flip=int(flip),
                 deskew_prefetch=int(deskew_prefetch),
+                pyramid_max_downsample=int(pyramid_max_downsample),
             )
         else:
             output_shape = _write_top_shear(
@@ -685,9 +610,7 @@ def run_chunked_deskew(
                 angle=float(angle),
                 flip=int(flip),
                 z_chunk=int(z_chunk),
-                deskew_workers=int(deskew_workers),
-                deskew_prefetch=int(deskew_prefetch),
-                deskew_x_block=int(deskew_x_block),
+                pyramid_max_downsample=int(pyramid_max_downsample),
             )
         (top_shear_dir / "note.txt").write_text(
             "Chunked top-view deskew output. "
@@ -700,7 +623,7 @@ def run_chunked_deskew(
     log_progress(f"Chunked deskew complete in {time.perf_counter() - run_start:.2f}s")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Chunked deskew/top-view TIFF writer.")
     parser.add_argument("--image_path", required=True)
     parser.add_argument("--cell_name", default="")
@@ -711,11 +634,14 @@ def main() -> None:
     parser.add_argument("--flip", type=int, required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--z_chunk", type=int, default=256)
-    parser.add_argument("--deskew_backend", default="gpu", choices=["gpu", "cpu", "cpu_blocked", "cuda"])
-    parser.add_argument("--deskew_workers", type=int, default=32)
+    parser.add_argument(
+        "--deskew_backend",
+        default="cpu_blocked",
+        choices=["gpu", "cpu", "cpu_blocked", "cpu_block", "cuda"],
+    )
     parser.add_argument("--deskew_prefetch", type=int, default=64)
-    parser.add_argument("--deskew_x_block", type=int, default=1)
-    args = parser.parse_args()
+    parser.add_argument("--pyramid_max_downsample", type=int, default=16)
+    args = parser.parse_args(argv)
     if args.cell_index:
         print("cell_index is accepted for compatibility but ignored by chunked deskew.", flush=True)
     run_chunked_deskew(
@@ -728,9 +654,8 @@ def main() -> None:
         output_dir=args.output_dir,
         deskew_backend=_resolve_deskew_backend(args.deskew_backend),
         z_chunk=max(1, args.z_chunk),
-        deskew_workers=max(1, args.deskew_workers),
         deskew_prefetch=max(1, args.deskew_prefetch),
-        deskew_x_block=max(1, args.deskew_x_block),
+        pyramid_max_downsample=max(1, args.pyramid_max_downsample),
     )
 
 

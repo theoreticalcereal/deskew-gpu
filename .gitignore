@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.nextflow*
+trace.txt
+timeline.html
+report.html
+dag.dot
+*.tif
+*.tiff
+*.ome.zarr/
+work/
+workflow/work/
+workflow/workflow/
+workflow/output/*
+!workflow/output/.keep
+tests/deskew_comparison_metrics*.json
+workflow/work/

@@ -1,4 +1,4 @@
-# 3D GPU Deskew
+# 3D Deskew With Optional GPU Acceleration
 
 This package runs the deskew half of the original combined workflow. It does not
 run deconvolution and does not launch visualization.

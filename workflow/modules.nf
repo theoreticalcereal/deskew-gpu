@@ -59,11 +59,14 @@ process STAGE_DESKEW_INPUT {
     ${link_commands}
     ${metadata_commands}
 
-    if [ ! -x "${deskew_runtime}/deskew_env/bin/python3" ] && [ ! -x "${deskew_runtime}/deskew_env/bin/python" ]; then
+    if [ -x "${deskew_runtime}/deskew_env/bin/python3" ] || [ -x "${deskew_runtime}/deskew_env/bin/python" ]; then
+        export CONDA_PREFIX="${deskew_runtime}/deskew_env"
+    elif [ -x "${deskew_runtime}/bin/python3" ] || [ -x "${deskew_runtime}/bin/python" ]; then
+        export CONDA_PREFIX="${deskew_runtime}"
+    else
         echo "ERROR: no supported deskew runtime found at ${deskew_runtime}" >&2
         exit 1
     fi
-    export CONDA_PREFIX="${deskew_runtime}/deskew_env"
     export CONDA_DEFAULT_ENV=deskew_env
     export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
     export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
@@ -77,7 +80,7 @@ process STAGE_DESKEW_INPUT {
 process DESKEW {
     tag "${cell_name ?: 'deskew'}"
 
-    publishDir "${params.output_dir}", mode: 'copy'
+    publishDir "${params.output_dir}", mode: 'move'
 
     input:
     val image_path
@@ -96,11 +99,14 @@ process DESKEW {
 
     script:
     """
-    if [ ! -x "${deskew_runtime}/deskew_env/bin/python3" ] && [ ! -x "${deskew_runtime}/deskew_env/bin/python" ]; then
+    if [ -x "${deskew_runtime}/deskew_env/bin/python3" ] || [ -x "${deskew_runtime}/deskew_env/bin/python" ]; then
+        export CONDA_PREFIX="${deskew_runtime}/deskew_env"
+    elif [ -x "${deskew_runtime}/bin/python3" ] || [ -x "${deskew_runtime}/bin/python" ]; then
+        export CONDA_PREFIX="${deskew_runtime}"
+    else
         echo "ERROR: no supported deskew runtime found at ${deskew_runtime}" >&2
         exit 1
     fi
-    export CONDA_PREFIX="${deskew_runtime}/deskew_env"
     export CONDA_DEFAULT_ENV=deskew_env
     export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
     export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
@@ -115,8 +121,8 @@ process DESKEW {
         --flip ${flip} \\
         --output_dir . \\
         --deskew_backend ${params.deskew_backend} \\
-        --deskew_workers ${params.deskew_workers} \\
+        --z_chunk ${params.z_chunk} \\
         --deskew_prefetch ${params.deskew_prefetch} \\
-        --deskew_x_block ${params.deskew_x_block}
+        --pyramid_max_downsample ${params.pyramid_max_downsample}
     """
 }

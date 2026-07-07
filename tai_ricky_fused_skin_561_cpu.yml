@@ -1,0 +1,10 @@
+input:
+  - /endosome/archive/bioinformatics/Danuser_lab/Dean/Tai_ricky/fused_skin_561.tif
+
+output_dir: ./workflow/output/tai_ricky_fused_skin_561_cpu
+dx: 0.168
+dz: 0.2
+angle: 45
+flip: 1
+deskew_backend: cpu_blocked
+deskew_runtime_dir: /endosome/work/bioinformatics/s249154/decon_env

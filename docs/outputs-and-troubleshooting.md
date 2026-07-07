@@ -7,8 +7,9 @@ either value is unset.
 
 ## CUDA Availability
 
-`deskew_backend = gpu` requires a visible CUDA device and the GPU queue. If CUDA
-is not available, set `deskew_backend = cpu_blocked`.
+`deskew_backend = gpu` or `deskew_backend = cuda` requires a visible CUDA device
+and the GPU queue. The default `deskew_backend = cpu_blocked` does not request a
+GPU and should be used when CUDA is unavailable.
 
 ## Runtime Environment
 

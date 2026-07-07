@@ -67,8 +67,13 @@ def requireSupplied(name, value, context) {
 }
 
 workflow {
-    BUILD_DESKEW_CONTAINER()
-    deskew_container_ch = BUILD_DESKEW_CONTAINER.out.image
+    if (isSupplied(params.deskew_runtime_dir)) {
+        log.info "Using prebuilt deskew runtime: ${params.deskew_runtime_dir}"
+        deskew_container_ch = Channel.value(file(params.deskew_runtime_dir, checkIfExists: true))
+    } else {
+        BUILD_DESKEW_CONTAINER()
+        deskew_container_ch = BUILD_DESKEW_CONTAINER.out.image
+    }
 
     input_patterns = normalizeInputPatterns(params.input, workflow.commandLine)
     if (input_patterns) {

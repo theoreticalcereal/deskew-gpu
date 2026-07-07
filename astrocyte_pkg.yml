@@ -76,11 +76,37 @@ workflow_parameters:
     description: Deskew implementation backend.
     choices:
       - [ 'gpu', 'GPU deskew' ]
+      - [ 'cuda', 'CUDA deskew' ]
       - [ 'cpu_blocked', 'CPU blocked reference' ]
 
-  - id: deskew_x_block
+  - id: z_chunk
     type: integer
     required: false
-    default: 1
+    default: 256
     min: 1
-    description: Number of adjacent output X pages computed per CPU deskew task.
+    description: Number of output Z samples processed per CPU sampling tile.
+
+  - id: deskew_prefetch
+    type: integer
+    required: false
+    default: 64
+    min: 1
+    description: Number of output X pages processed in each GPU batch.
+
+  - id: pyramid_max_downsample
+    type: select
+    required: false
+    default: '16'
+    description: Largest XY OME-Zarr pyramid downsample factor to write.
+    choices:
+      - [ '1', 'Full resolution only' ]
+      - [ '2', 'Up to 2x' ]
+      - [ '4', 'Up to 4x' ]
+      - [ '8', 'Up to 8x' ]
+      - [ '16', 'Up to 16x' ]
+
+  - id: deskew_runtime_dir
+    type: string
+    required: false
+    default: ''
+    description: Optional prebuilt runtime path; leave empty to build the workflow runtime.

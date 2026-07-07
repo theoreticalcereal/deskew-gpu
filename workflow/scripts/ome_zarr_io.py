@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import time
 from datetime import datetime
 from typing import Iterable
 
@@ -50,7 +51,26 @@ def discover_image_volumes(input_dir: Path | str) -> list[Path]:
     return sorted(paths, key=lambda path: path.name)
 
 
-def multiscales_metadata(layer_name: str, downsample_factors: Iterable[int] = PYRAMID_DOWNSAMPLE_FACTORS) -> dict:
+def pyramid_downsample_factors(
+    *,
+    max_downsample: int = 16,
+    downsample_factors: Iterable[int] = PYRAMID_DOWNSAMPLE_FACTORS,
+) -> tuple[int, ...]:
+    max_downsample = max(1, int(max_downsample))
+    factors = tuple(int(factor) for factor in downsample_factors if int(factor) <= max_downsample)
+    return factors or (1,)
+
+
+def multiscales_metadata(
+    layer_name: str,
+    downsample_factors: Iterable[int] = PYRAMID_DOWNSAMPLE_FACTORS,
+    *,
+    max_downsample: int = 16,
+) -> dict:
+    factors = pyramid_downsample_factors(
+        max_downsample=max_downsample,
+        downsample_factors=downsample_factors,
+    )
     datasets = [
         {
             "path": str(level),
@@ -58,7 +78,7 @@ def multiscales_metadata(layer_name: str, downsample_factors: Iterable[int] = PY
                 {"type": "scale", "scale": [1, int(factor), int(factor)]}
             ],
         }
-        for level, factor in enumerate(downsample_factors)
+        for level, factor in enumerate(factors)
     ]
     return {
         "multiscales": [
@@ -130,6 +150,7 @@ def create_ome_zarr_array(
     dtype,
     chunks: Iterable[int],
     layer_name: str | None = None,
+    max_downsample: int = 16,
     overwrite: bool = True,
 ):
     try:
@@ -145,7 +166,10 @@ def create_ome_zarr_array(
     (zarr_path / ".zgroup").write_text(json.dumps({"zarr_format": 2}) + "\n")
     (zarr_path / ".zattrs").write_text(
         json.dumps(
-            multiscales_metadata(layer_name or image_stem(zarr_path)),
+            multiscales_metadata(
+                layer_name or image_stem(zarr_path),
+                max_downsample=max_downsample,
+            ),
             indent=2,
             sort_keys=True,
         )
@@ -206,12 +230,37 @@ def write_downsampled_pyramid(
             dtype=dtype,
             compressor=None,
         )
-        for z_start in range(0, shape[0], chunks[0]):
+        level_start = time.perf_counter()
+        last_progress = level_start
+        chunks_written = 0
+        total_chunks = ((int(shape[0]) - 1) // int(chunks[0])) + 1
+        for chunks_written, z_start in enumerate(range(0, shape[0], chunks[0]), start=1):
             z_stop = min(z_start + chunks[0], shape[0])
             target[z_start:z_stop, :, :] = source[z_start:z_stop, ::factor, ::factor]
+            now = time.perf_counter()
+            if chunks_written == total_chunks or now - last_progress >= 60:
+                log_progress(
+                    "OME-Zarr pyramid level progress: "
+                    f"path={zarr_path / str(level)}, downsample={factor}x, "
+                    f"chunks={chunks_written}/{total_chunks}, "
+                    f"elapsed={now - level_start:.2f}s"
+                )
+                last_progress = now
+        log_progress(
+            "Finished OME-Zarr pyramid level: "
+            f"path={zarr_path / str(level)}, downsample={factor}x, "
+            f"chunks_written={chunks_written}, elapsed={time.perf_counter() - level_start:.2f}s"
+        )
 
 
-def write_ome_zarr_array(path: Path | str, array, *, chunks=None, layer_name: str | None = None) -> Path:
+def write_ome_zarr_array(
+    path: Path | str,
+    array,
+    *,
+    chunks=None,
+    layer_name: str | None = None,
+    max_downsample: int = 16,
+) -> Path:
     shape = tuple(int(axis) for axis in array.shape)
     if len(shape) != 3:
         raise ValueError(f"OME-Zarr workflow volumes must be 3-D, got shape {shape}")
@@ -229,8 +278,9 @@ def write_ome_zarr_array(path: Path | str, array, *, chunks=None, layer_name: st
         dtype=array.dtype,
         chunks=chunks,
         layer_name=layer_name,
+        max_downsample=max_downsample,
     )
     zarr_array[:] = array
-    write_downsampled_pyramid(output)
+    write_downsampled_pyramid(output, max_downsample=max_downsample)
     log_progress(f"Finished OME-Zarr volume: {output.resolve()}")
     return output.resolve()
