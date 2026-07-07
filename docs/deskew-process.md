@@ -9,6 +9,11 @@ CPU chunked mode is the default backend (`deskew_backend = cpu_blocked`). Set
 implementation. GPU runs materialize each input volume once for transfer to the
 device, then write the same `Top_shear/` output layout as the CPU path.
 
+The implementation computes one or more output X pages internally, but
+top-shear OME-Zarr output is written and labelled in `x, y, z` order for
+Neuroglancer staging. TIFF output keeps the existing page-stack order for
+compatibility with the original MATLAB workflow.
+
 CPU tuning parameters:
 
 - CPU deskew always computes and writes one output X page at a time. This keeps

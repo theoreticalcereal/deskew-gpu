@@ -14,7 +14,12 @@ workflow/output/
 `Top_shear/` is the handoff directory for the separate `deconvolution-gpu`
 workflow.
 
-Level `0` is full resolution. By default, levels `1` through `4` are XY
-downsampled from level `0` by row/column stride slicing at `2x, 4x, 8x, 16x`;
-Z is not downsampled. Set `pyramid_max_downsample` to `1`, `2`, `4`, or `8` to
-stop generation before the default `16x` level.
+Level `0` is full resolution and top-shear output is stored and labelled in
+Neuroglancer-oriented `x, y, z` axis order. In these outputs, `x` is the output
+page axis computed from the original X dimension, `y` is the deskewed/sheared
+lateral axis, and `z` is the scaled top-view depth.
+
+By default, levels `1` through `4` are XY downsampled from level `0` by
+row/column stride slicing at `2x, 4x, 8x, 16x`; Z is not downsampled. Set
+`pyramid_max_downsample` to `1`, `2`, `4`, or `8` to stop generation before the
+default `16x` level.

@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -15,8 +16,13 @@ SCRIPTS = ROOT / "workflow" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from chunked_deskew import _materialize_volume, _write_top_shear
-from ome_zarr_io import create_ome_zarr_array, multiscales_metadata, write_downsampled_pyramid
+from chunked_deskew import _materialize_volume, _write_top_shear, run_chunked_deskew
+from ome_zarr_io import (
+    create_ome_zarr_array,
+    multiscales_metadata,
+    open_ome_zarr_array,
+    write_downsampled_pyramid,
+)
 
 
 class DeskewWiringTest(unittest.TestCase):
@@ -109,24 +115,14 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("withName: STAGE_DESKEW_INPUT", config_text)
         self.assertIn("queue = 'super'", config_text)
 
-    def test_tai_ricky_params_are_declared_in_astrocyte_schema(self):
-        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
-        schema_ids = {entry["id"] for entry in package["workflow_parameters"]}
-
+    def test_sample_parameter_files_are_not_packaged(self):
         for params_name in (
             "tai_ricky_fused_skin_561.yml",
             "tai_ricky_fused_skin_561_cpu.yml",
-        ):
-            params = yaml.safe_load((ROOT / params_name).read_text(encoding="utf-8"))
-            self.assertLessEqual(set(params), schema_ids)
-
-    def test_x32_comparison_params_use_absolute_output_dirs(self):
-        for params_name in (
             "tai_ricky_fused_skin_561_x32.yml",
             "tai_ricky_fused_skin_561_x32_cpu.yml",
         ):
-            params = yaml.safe_load((ROOT / params_name).read_text(encoding="utf-8"))
-            self.assertTrue(Path(params["output_dir"]).is_absolute(), params_name)
+            self.assertFalse((ROOT / params_name).exists(), params_name)
 
     def test_gpu_materialization_converts_big_endian_uint16_to_native(self):
         source = np.asarray([[[1, 256], [512, 1024]]], dtype=">u2")
@@ -160,6 +156,67 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("mode=page_serial", logs.getvalue())
         self.assertNotIn("mode=parallel", logs.getvalue())
         self.assertEqual(written.shape, (output_shape[2], output_shape[0], output_shape[1]))
+
+    def test_cpu_top_shear_ome_zarr_is_stored_as_xyz(self):
+        volume = np.arange(3 * 5 * 4, dtype=np.uint16).reshape(3, 5, 4)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "top_shear.ome.zarr"
+            with contextlib.redirect_stdout(io.StringIO()):
+                output_shape = _write_top_shear(
+                    volume,
+                    output,
+                    dx=1.0,
+                    dz=1.0,
+                    angle=30.0,
+                    flip=1,
+                    z_chunk=1,
+                    pyramid_max_downsample=1,
+                )
+
+            written = open_ome_zarr_array(output)
+            zattrs = json.loads((output / ".zattrs").read_text(encoding="utf-8"))
+
+        self.assertEqual(written.shape, (output_shape[2], output_shape[0], output_shape[1]))
+        self.assertEqual(
+            [axis["name"] for axis in zattrs["multiscales"][0]["axes"]],
+            ["x", "y", "z"],
+        )
+
+    def test_run_chunked_deskew_note_reports_ome_zarr_xyz_layout(self):
+        volume = np.arange(3 * 5 * 4, dtype=np.uint16).reshape(3, 5, 4)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "input"
+            output_dir = Path(tmpdir) / "output"
+            input_dir.mkdir()
+            source = create_ome_zarr_array(
+                input_dir / "sample.ome.zarr",
+                shape=volume.shape,
+                chunks=(1, 5, 4),
+                dtype=volume.dtype,
+                max_downsample=1,
+            )
+            source[:] = volume
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_chunked_deskew(
+                    image_path=str(input_dir),
+                    cell_name="",
+                    dx=1.0,
+                    dz=1.0,
+                    angle=30.0,
+                    flip=1,
+                    output_dir=str(output_dir),
+                    deskew_backend="cpu_blocked",
+                    z_chunk=1,
+                    deskew_prefetch=1,
+                    pyramid_max_downsample=1,
+                )
+
+            note_text = (output_dir / "Top_shear" / "note.txt").read_text(encoding="utf-8")
+
+        self.assertIn("ome_zarr_level0_xyz=", note_text)
 
     def test_multiscales_metadata_respects_pyramid_max_downsample(self):
         metadata = multiscales_metadata("deskewed", max_downsample=4)

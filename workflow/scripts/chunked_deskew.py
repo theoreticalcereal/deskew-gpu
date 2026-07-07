@@ -312,6 +312,7 @@ def _write_top_shear(
             dtype=np.dtype("uint16"),
             layer_name=image_stem(output_path),
             max_downsample=int(pyramid_max_downsample),
+            axes=("x", "y", "z"),
         )
         writer_context = nullcontext()
         writer = None
@@ -464,6 +465,7 @@ def _write_top_shear_gpu(
             dtype=np.dtype("uint16"),
             layer_name=image_stem(output_path),
             max_downsample=int(pyramid_max_downsample),
+            axes=("x", "y", "z"),
         )
         writer_context = nullcontext()
         writer = None
@@ -614,7 +616,9 @@ def run_chunked_deskew(
             )
         (top_shear_dir / "note.txt").write_text(
             "Chunked top-view deskew output. "
-            f"output_yzx={output_shape}; z pixel = x(y) pixel.\n"
+            f"output_yzx={output_shape}; "
+            f"ome_zarr_level0_xyz={(output_shape[2], output_shape[0], output_shape[1])}; "
+            "z pixel = x(y) pixel.\n"
         )
         log_progress(
             f"Finished deskew input {path.name}: output={output_name}, "

@@ -66,7 +66,11 @@ def multiscales_metadata(
     downsample_factors: Iterable[int] = PYRAMID_DOWNSAMPLE_FACTORS,
     *,
     max_downsample: int = 16,
+    axes: Iterable[str] = ("z", "y", "x"),
 ) -> dict:
+    axis_names = tuple(str(axis) for axis in axes)
+    if len(axis_names) != 3:
+        raise ValueError(f"OME-Zarr workflow volumes must have three axes, got {axis_names}")
     factors = pyramid_downsample_factors(
         max_downsample=max_downsample,
         downsample_factors=downsample_factors,
@@ -86,9 +90,8 @@ def multiscales_metadata(
                 "version": "0.4",
                 "name": layer_name,
                 "axes": [
-                    {"name": "z", "type": "space"},
-                    {"name": "y", "type": "space"},
-                    {"name": "x", "type": "space"},
+                    {"name": axis_name, "type": "space"}
+                    for axis_name in axis_names
                 ],
                 "datasets": datasets,
             }
@@ -151,6 +154,7 @@ def create_ome_zarr_array(
     chunks: Iterable[int],
     layer_name: str | None = None,
     max_downsample: int = 16,
+    axes: Iterable[str] = ("z", "y", "x"),
     overwrite: bool = True,
 ):
     try:
@@ -169,6 +173,7 @@ def create_ome_zarr_array(
             multiscales_metadata(
                 layer_name or image_stem(zarr_path),
                 max_downsample=max_downsample,
+                axes=axes,
             ),
             indent=2,
             sort_keys=True,

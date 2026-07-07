@@ -19,3 +19,18 @@ installed by this package.
 
 The runtime also includes the deconvolution dependencies so it can be reused by
 `deconvolution-gpu` when `decon_runtime_dir` points at the built deskew runtime.
+
+## CPU/GPU Output Comparison
+
+Use `workflow/scripts/compare_deskew_outputs.py` to compare CPU and GPU deskew
+outputs after both runs finish. Pass explicit output paths:
+
+```bash
+python workflow/scripts/compare_deskew_outputs.py \
+  --cpu cpu_output/Top_shear/sample.ome.zarr \
+  --gpu gpu_output/Top_shear/sample.ome.zarr \
+  --output_json deskew-comparison.json
+```
+
+The script can also infer output paths and lateral pixel size from matching
+workflow parameter YAML files with `--cpu_params` and `--gpu_params`.
