@@ -79,7 +79,13 @@ def multiscales_metadata(
         {
             "path": str(level),
             "coordinateTransformations": [
-                {"type": "scale", "scale": [1, int(factor), int(factor)]}
+                {
+                    "type": "scale",
+                    "scale": [
+                        int(factor) if axis_name in ("x", "y") else 1
+                        for axis_name in axis_names
+                    ],
+                }
             ],
         }
         for level, factor in enumerate(factors)
@@ -122,18 +128,71 @@ def _normalise_chunks(chunks, shape: tuple[int, int, int]) -> tuple[int, int, in
 
 
 def _downsampled_chunks(base_chunks: tuple[int, int, int], shape: tuple[int, int, int], factor: int) -> tuple[int, int, int]:
-    return (
-        max(1, min(int(base_chunks[0]), int(shape[0]))),
-        max(1, min(max(1, int(base_chunks[1]) // int(factor)), int(shape[1]))),
-        max(1, min(max(1, int(base_chunks[2]) // int(factor)), int(shape[2]))),
+    return _downsampled_chunks_for_axes(
+        base_chunks,
+        shape,
+        factor,
+        downsample_axes=(1, 2),
+    )
+
+
+def _downsampled_chunks_for_axes(
+    base_chunks: tuple[int, int, int],
+    shape: tuple[int, int, int],
+    factor: int,
+    *,
+    downsample_axes: Iterable[int],
+) -> tuple[int, int, int]:
+    axes = set(int(axis) for axis in downsample_axes)
+    return tuple(
+        max(
+            1,
+            min(
+                max(1, int(chunk) // int(factor)) if index in axes else int(chunk),
+                int(axis_size),
+            ),
+        )
+        for index, (chunk, axis_size) in enumerate(zip(base_chunks, shape, strict=True))
     )
 
 
 def _downsampled_shape_xy(shape: tuple[int, int, int], factor: int) -> tuple[int, int, int]:
-    return (
-        int(shape[0]),
-        max(1, ((int(shape[1]) - 1) // int(factor)) + 1),
-        max(1, ((int(shape[2]) - 1) // int(factor)) + 1),
+    return _downsampled_shape_for_axes(shape, factor, downsample_axes=(1, 2))
+
+
+def _downsampled_shape_for_axes(
+    shape: tuple[int, int, int],
+    factor: int,
+    *,
+    downsample_axes: Iterable[int],
+) -> tuple[int, int, int]:
+    axes = set(int(axis) for axis in downsample_axes)
+    return tuple(
+        max(1, ((int(axis_size) - 1) // int(factor)) + 1)
+        if index in axes
+        else int(axis_size)
+        for index, axis_size in enumerate(shape)
+    )
+
+
+def _axis_names(zarr_path: Path) -> tuple[str, str, str]:
+    attrs_path = zarr_path / ".zattrs"
+    if not attrs_path.exists():
+        return ("z", "y", "x")
+    attrs = json.loads(attrs_path.read_text(encoding="utf-8"))
+    multiscales = attrs.get("multiscales") or []
+    if not multiscales:
+        return ("z", "y", "x")
+    axes = multiscales[0].get("axes") or []
+    names = tuple(str(axis.get("name", "")) for axis in axes)
+    return names if len(names) == 3 and all(names) else ("z", "y", "x")
+
+
+def _downsample_axes_for_pyramid(axis_names: Iterable[str]) -> tuple[int, ...]:
+    return tuple(
+        index
+        for index, axis_name in enumerate(axis_names)
+        if axis_name in ("x", "y")
     )
 
 
@@ -213,6 +272,7 @@ def write_downsampled_pyramid(
         raise ValueError(f"OME-Zarr pyramid source must be 3-D, got shape {source_shape}")
     source_chunks = _normalise_chunks(getattr(source, "chunks", None), source_shape)
     dtype = getattr(source, "dtype", None)
+    downsample_axes = _downsample_axes_for_pyramid(_axis_names(zarr_path))
 
     for level, factor in enumerate(downsample_factors):
         factor = int(factor)
@@ -220,8 +280,13 @@ def write_downsampled_pyramid(
             continue
         if factor > int(max_downsample):
             continue
-        shape = _downsampled_shape_xy(source_shape, factor)
-        chunks = _downsampled_chunks(source_chunks, shape, factor)
+        shape = _downsampled_shape_for_axes(source_shape, factor, downsample_axes=downsample_axes)
+        chunks = _downsampled_chunks_for_axes(
+            source_chunks,
+            shape,
+            factor,
+            downsample_axes=downsample_axes,
+        )
         log_progress(
             "Writing OME-Zarr pyramid level: "
             f"path={zarr_path / str(level)}, downsample={factor}x, "
@@ -241,7 +306,17 @@ def write_downsampled_pyramid(
         total_chunks = ((int(shape[0]) - 1) // int(chunks[0])) + 1
         for chunks_written, z_start in enumerate(range(0, shape[0], chunks[0]), start=1):
             z_stop = min(z_start + chunks[0], shape[0])
-            target[z_start:z_stop, :, :] = source[z_start:z_stop, ::factor, ::factor]
+            target_selection = [slice(None), slice(None), slice(None)]
+            target_selection[0] = slice(z_start, z_stop)
+            source_selection = [slice(None), slice(None), slice(None)]
+            if 0 in downsample_axes:
+                source_selection[0] = slice(z_start * factor, z_stop * factor, factor)
+            else:
+                source_selection[0] = slice(z_start, z_stop)
+            for axis in range(1, 3):
+                if axis in downsample_axes:
+                    source_selection[axis] = slice(None, None, factor)
+            target[tuple(target_selection)] = source[tuple(source_selection)]
             now = time.perf_counter()
             if chunks_written == total_chunks or now - last_progress >= 60:
                 log_progress(

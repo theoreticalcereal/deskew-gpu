@@ -307,12 +307,11 @@ def _write_top_shear(
         log_progress(f"Writing deskew output as OME-Zarr: {output_path}")
         zarr_output = create_ome_zarr_array(
             output_path,
-            shape=(x_size, shear_y, scaled_z),
-            chunks=(1, min(256, shear_y), min(256, scaled_z)),
+            shape=(scaled_z, shear_y, x_size),
+            chunks=(min(16, scaled_z), min(256, shear_y), min(256, x_size)),
             dtype=np.dtype("uint16"),
             layer_name=image_stem(output_path),
             max_downsample=int(pyramid_max_downsample),
-            axes=("x", "y", "z"),
         )
         writer_context = nullcontext()
         writer = None
@@ -387,7 +386,7 @@ def _write_top_shear(
 
     def write_page(page_index: int, page: np.ndarray) -> None:
         if zarr_output is not None:
-            zarr_output[page_index, :, :] = page
+            zarr_output[:, :, page_index] = page.T
         else:
             writer.write(
                 page,
@@ -460,12 +459,11 @@ def _write_top_shear_gpu(
         log_progress(f"Writing GPU deskew output as OME-Zarr: {output_path}")
         zarr_output = create_ome_zarr_array(
             output_path,
-            shape=(x_size, shear_y, scaled_z),
-            chunks=(1, min(256, shear_y), min(256, scaled_z)),
+            shape=(scaled_z, shear_y, x_size),
+            chunks=(min(16, scaled_z), min(256, shear_y), min(256, x_size)),
             dtype=np.dtype("uint16"),
             layer_name=image_stem(output_path),
             max_downsample=int(pyramid_max_downsample),
-            axes=("x", "y", "z"),
         )
         writer_context = nullcontext()
         writer = None
@@ -494,7 +492,7 @@ def _write_top_shear_gpu(
 
     def write_page(page_index: int, page: np.ndarray) -> None:
         if zarr_output is not None:
-            zarr_output[page_index, :, :] = page
+            zarr_output[:, :, page_index] = page.T
         else:
             writer.write(
                 page,
@@ -617,7 +615,7 @@ def run_chunked_deskew(
         (top_shear_dir / "note.txt").write_text(
             "Chunked top-view deskew output. "
             f"output_yzx={output_shape}; "
-            f"ome_zarr_level0_xyz={(output_shape[2], output_shape[0], output_shape[1])}; "
+            f"ome_zarr_level0_zyx={(output_shape[1], output_shape[0], output_shape[2])}; "
             "z pixel = x(y) pixel.\n"
         )
         log_progress(

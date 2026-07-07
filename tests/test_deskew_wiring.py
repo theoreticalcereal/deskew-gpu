@@ -157,7 +157,7 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertNotIn("mode=parallel", logs.getvalue())
         self.assertEqual(written.shape, (output_shape[2], output_shape[0], output_shape[1]))
 
-    def test_cpu_top_shear_ome_zarr_is_stored_as_xyz(self):
+    def test_cpu_top_shear_ome_zarr_is_stored_as_zyx(self):
         volume = np.arange(3 * 5 * 4, dtype=np.uint16).reshape(3, 5, 4)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -177,13 +177,13 @@ class DeskewWiringTest(unittest.TestCase):
             written = open_ome_zarr_array(output)
             zattrs = json.loads((output / ".zattrs").read_text(encoding="utf-8"))
 
-        self.assertEqual(written.shape, (output_shape[2], output_shape[0], output_shape[1]))
+        self.assertEqual(written.shape, (output_shape[1], output_shape[0], output_shape[2]))
         self.assertEqual(
             [axis["name"] for axis in zattrs["multiscales"][0]["axes"]],
-            ["x", "y", "z"],
+            ["z", "y", "x"],
         )
 
-    def test_run_chunked_deskew_note_reports_ome_zarr_xyz_layout(self):
+    def test_run_chunked_deskew_note_reports_ome_zarr_zyx_layout(self):
         volume = np.arange(3 * 5 * 4, dtype=np.uint16).reshape(3, 5, 4)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -216,7 +216,7 @@ class DeskewWiringTest(unittest.TestCase):
 
             note_text = (output_dir / "Top_shear" / "note.txt").read_text(encoding="utf-8")
 
-        self.assertIn("ome_zarr_level0_xyz=", note_text)
+        self.assertIn("ome_zarr_level0_zyx=", note_text)
 
     def test_multiscales_metadata_respects_pyramid_max_downsample(self):
         metadata = multiscales_metadata("deskewed", max_downsample=4)
@@ -246,6 +246,36 @@ class DeskewWiringTest(unittest.TestCase):
 
         self.assertIn("Finished OME-Zarr pyramid level:", logs.getvalue())
         self.assertIn("chunks_written=", logs.getvalue())
+
+    def test_zyx_pyramid_downsamples_y_x_and_preserves_z(self):
+        import zarr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "sample.ome.zarr"
+            base = np.arange(4 * 6 * 8, dtype=np.uint16).reshape(4, 6, 8)
+            zarr_array = create_ome_zarr_array(
+                output,
+                shape=base.shape,
+                chunks=(2, 3, 4),
+                dtype=base.dtype,
+                max_downsample=2,
+            )
+            zarr_array[:] = base
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                write_downsampled_pyramid(output, max_downsample=2)
+
+            level1 = zarr.open(str(output / "1"), mode="r")
+            level1_shape = level1.shape
+            level1_values = level1[:]
+            zattrs = json.loads((output / ".zattrs").read_text(encoding="utf-8"))
+
+        self.assertEqual(level1_shape, (4, 3, 4))
+        np.testing.assert_array_equal(level1_values, base[:, ::2, ::2])
+        self.assertEqual(
+            zattrs["multiscales"][0]["datasets"][1]["coordinateTransformations"][0]["scale"],
+            [1, 2, 2],
+        )
 
     def test_chunked_deskew_cli_accepts_pyramid_max_downsample(self):
         import chunked_deskew as chunked_module

@@ -15,9 +15,9 @@ workflow/output/
 workflow.
 
 Level `0` is full resolution and top-shear output is stored and labelled in
-Neuroglancer-oriented `x, y, z` axis order. In these outputs, `x` is the output
-page axis computed from the original X dimension, `y` is the deskewed/sheared
-lateral axis, and `z` is the scaled top-view depth.
+`z, y, x` axis order. In these outputs, `z` is the scaled top-view depth, `y`
+is the deskewed/sheared lateral axis, and `x` is the output page axis computed
+from the original X dimension.
 
 By default, levels `1` through `4` are XY downsampled from level `0` by
 row/column stride slicing at `2x, 4x, 8x, 16x`; Z is not downsampled. Set

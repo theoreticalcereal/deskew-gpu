@@ -10,9 +10,9 @@ implementation. GPU runs materialize each input volume once for transfer to the
 device, then write the same `Top_shear/` output layout as the CPU path.
 
 The implementation computes one or more output X pages internally, but
-top-shear OME-Zarr output is written and labelled in `x, y, z` order for
-Neuroglancer staging. TIFF output keeps the existing page-stack order for
-compatibility with the original MATLAB workflow.
+top-shear OME-Zarr output is written and labelled in `z, y, x` order. TIFF
+output keeps the existing page-stack order for compatibility with the original
+MATLAB workflow.
 
 CPU tuning parameters:
 
