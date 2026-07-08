@@ -87,11 +87,11 @@ workflow_parameters:
   - id: deskew_geometry
     type: select
     required: false
-    default: 'top_view'
+    default: 'clearex_affine'
     description: Deskew geometry model.
     choices:
-      - [ 'top_view', 'MATLAB top-view geometry' ]
       - [ 'clearex_affine', 'ClearEx affine geometry' ]
+      - [ 'top_view', 'MATLAB top-view geometry' ]
 
   - id: deskew_output_dtype
     type: select
