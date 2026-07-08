@@ -20,6 +20,7 @@ from chunked_deskew import (
     _clearex_affine_geometry,
     _linear_sample_support_normalized,
     _materialize_volume,
+    _source_x_bounds_for_output_tile,
     _write_clearex_affine,
     _write_top_shear,
     run_chunked_deskew,
@@ -68,6 +69,12 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("params.deskew_backend", config_text)
         self.assertIn("cuda", config_text)
         self.assertNotIn("psf_mode", config_text)
+
+    def test_workflow_scripts_do_not_import_clearex_runtime(self):
+        for script in (ROOT / "workflow/scripts").glob("*.py"):
+            text = script.read_text(encoding="utf-8")
+            self.assertNotIn("import clearex", text, msg=str(script))
+            self.assertNotIn("from clearex", text, msg=str(script))
 
     def test_nextflow_passes_cpu_and_gpu_tuning_parameters(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
@@ -253,6 +260,11 @@ class DeskewWiringTest(unittest.TestCase):
             _linear_sample_support_normalized(volume, zf=0.0, yf=0.0, xf=1.5001),
             0.0,
         )
+
+    def test_clearex_affine_gpu_source_x_tiles_include_interpolation_halo(self):
+        self.assertEqual(_source_x_bounds_for_output_tile(0, 256, 3584), (0, 257))
+        self.assertEqual(_source_x_bounds_for_output_tile(256, 512, 3584), (255, 513))
+        self.assertEqual(_source_x_bounds_for_output_tile(3328, 3584, 3584), (3327, 3584))
 
     def test_cpu_clearex_affine_ome_zarr_is_stored_as_zyx_with_metadata(self):
         volume = np.arange(4 * 6 * 5, dtype=np.uint16).reshape(4, 6, 5)

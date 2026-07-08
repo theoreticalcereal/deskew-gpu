@@ -6,8 +6,14 @@ pages, and writes deskewed OME-Zarr volumes under `Top_shear/`.
 
 CPU chunked mode is the default backend (`deskew_backend = cpu_blocked`). Set
 `deskew_backend = gpu` or `deskew_backend = cuda` to use the Numba CUDA
-implementation. GPU runs materialize each input volume once for transfer to the
-device, then write the same `Top_shear/` output layout as the CPU path.
+implementation. GPU runs write the same `Top_shear/` output layout as the CPU
+path. The top-view CUDA path batches output X pages; the ClearEx-affine CUDA
+path batches output Z pages and uploads only the source X slab needed for each
+output tile.
+
+The ClearEx-affine implementation is self-contained in this workflow. It does
+not import ClearEx at runtime; the affine geometry and sampler behavior are
+implemented locally for reproducible Nextflow runs.
 
 The implementation computes one or more output X pages internally, but
 top-shear OME-Zarr output is written and labelled in `z, y, x` order. TIFF
@@ -22,4 +28,5 @@ CPU tuning parameters:
 
 GPU tuning parameter:
 
-- `deskew_prefetch`: number of output X pages processed in each GPU batch.
+- `deskew_prefetch`: number of output X pages processed in each top-view GPU
+  batch, or output Z slices processed in each ClearEx-affine GPU batch.

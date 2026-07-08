@@ -192,6 +192,21 @@ def _cast_resampled_value(value: float, *, output_dtype: np.dtype) -> float | in
     return float(value)
 
 
+def _source_x_bounds_for_output_tile(
+    output_x_start: int,
+    output_x_stop: int,
+    source_x_size: int,
+) -> tuple[int, int]:
+    start = max(0, int(output_x_start) - 1)
+    stop = min(int(source_x_size), int(output_x_stop) + 1)
+    if stop <= start:
+        raise ValueError(
+            f"Invalid ClearEx-affine source X tile bounds for output "
+            f"{output_x_start}:{output_x_stop} and source size {source_x_size}"
+        )
+    return start, stop
+
+
 def _clearex_affine_geometry(
     *,
     source_shape_zyx: tuple[int, int, int],
@@ -848,19 +863,33 @@ def _load_gpu_affine_kernel(*, output_dtype: np.dtype):
     if _GPU_AFFINE_KERNEL is None or _GPU_AFFINE_KERNEL_FLOAT32 is None:
 
         @cuda.jit(device=True)
-        def affine_sample(volume, zf, yf, xf):
+        def affine_sample(
+            volume,
+            zf,
+            yf,
+            xf,
+            source_z_size,
+            source_y_size,
+            source_x_size,
+            source_z0,
+            source_y0,
+            source_x0,
+        ):
+            if (
+                zf < -0.5
+                or zf > float(source_z_size) - 0.5
+                or yf < -0.5
+                or yf > float(source_y_size) - 0.5
+                or xf < -0.5
+                or xf > float(source_x_size) - 0.5
+            ):
+                return 0.0
+            zf = zf - float(source_z0)
+            yf = yf - float(source_y0)
+            xf = xf - float(source_x0)
             z_size = volume.shape[0]
             y_size = volume.shape[1]
             x_size = volume.shape[2]
-            if (
-                zf < -0.5
-                or zf > float(z_size) - 0.5
-                or yf < -0.5
-                or yf > float(y_size) - 0.5
-                or xf < -0.5
-                or xf > float(x_size) - 0.5
-            ):
-                return 0.0
             z0 = int(math.floor(zf))
             y0 = int(math.floor(yf))
             x0 = int(math.floor(xf))
@@ -900,12 +929,20 @@ def _load_gpu_affine_kernel(*, output_dtype: np.dtype):
             inv_offset,
             out_origin,
             spacing,
+            source_z_size,
+            source_y_size,
+            source_x_size,
+            source_z0,
+            source_y0,
+            source_x0,
+            x_start,
         ):
-            z_local, y_index, x_index = cuda.grid(3)
-            if z_local >= output.shape[0] or y_index >= output.shape[1] or x_index >= output.shape[2]:
+            z_local, y_index, x_local = cuda.grid(3)
+            if z_local >= output.shape[0] or y_index >= output.shape[1] or x_local >= output.shape[2]:
                 return
 
             z_index = z_start + z_local
+            x_index = x_start + x_local
             out_x = out_origin[0] + (float(x_index) * spacing[2])
             out_y = out_origin[1] + (float(y_index) * spacing[1])
             out_z = out_origin[2] + (float(z_index) * spacing[0])
@@ -933,13 +970,19 @@ def _load_gpu_affine_kernel(*, output_dtype: np.dtype):
                 src_z / spacing[0],
                 src_y / spacing[1],
                 src_x / spacing[2],
+                source_z_size,
+                source_y_size,
+                source_x_size,
+                source_z0,
+                source_y0,
+                source_x0,
             )
             if value < 0.0:
-                output[z_local, y_index, x_index] = 0
+                output[z_local, y_index, x_local] = 0
             elif value > 65535.0:
-                output[z_local, y_index, x_index] = 65535
+                output[z_local, y_index, x_local] = 65535
             else:
-                output[z_local, y_index, x_index] = int(math.floor(value + 0.5))
+                output[z_local, y_index, x_local] = int(math.floor(value + 0.5))
 
         @cuda.jit
         def cuda_clearex_affine_float32(
@@ -950,12 +993,20 @@ def _load_gpu_affine_kernel(*, output_dtype: np.dtype):
             inv_offset,
             out_origin,
             spacing,
+            source_z_size,
+            source_y_size,
+            source_x_size,
+            source_z0,
+            source_y0,
+            source_x0,
+            x_start,
         ):
-            z_local, y_index, x_index = cuda.grid(3)
-            if z_local >= output.shape[0] or y_index >= output.shape[1] or x_index >= output.shape[2]:
+            z_local, y_index, x_local = cuda.grid(3)
+            if z_local >= output.shape[0] or y_index >= output.shape[1] or x_local >= output.shape[2]:
                 return
 
             z_index = z_start + z_local
+            x_index = x_start + x_local
             out_x = out_origin[0] + (float(x_index) * spacing[2])
             out_y = out_origin[1] + (float(y_index) * spacing[1])
             out_z = out_origin[2] + (float(z_index) * spacing[0])
@@ -983,6 +1034,12 @@ def _load_gpu_affine_kernel(*, output_dtype: np.dtype):
                 src_z / spacing[0],
                 src_y / spacing[1],
                 src_x / spacing[2],
+                source_z_size,
+                source_y_size,
+                source_x_size,
+                source_z0,
+                source_y0,
+                source_x0,
             )
 
         _GPU_AFFINE_KERNEL = cuda_clearex_affine_uint16
@@ -1009,8 +1066,8 @@ def _write_clearex_affine_gpu(
     cuda, kernel = _load_gpu_affine_kernel(output_dtype=target_dtype)
     host_volume = _materialize_volume(
         volume_zyx,
-        message="Materializing input volume for ClearEx-affine GPU transfer",
-    ).astype(np.float32, copy=False)
+        message="Materializing input volume for ClearEx-affine GPU source tiling",
+    )
     geometry = _clearex_affine_geometry(
         source_shape_zyx=tuple(int(v) for v in host_volume.shape),
         dx=float(dx),
@@ -1040,41 +1097,63 @@ def _write_clearex_affine_gpu(
     )
     _write_clearex_affine_metadata(output_path, geometry)
 
-    device_volume = cuda.to_device(np.ascontiguousarray(host_volume))
     device_matrix = cuda.to_device(np.asarray(geometry.inverse_matrix_xyz, dtype=np.float64))
     device_offset = cuda.to_device(np.asarray(geometry.inverse_offset_xyz, dtype=np.float64))
     device_origin = cuda.to_device(np.asarray(geometry.output_origin_xyz, dtype=np.float64))
     device_spacing = cuda.to_device(np.asarray(geometry.voxel_size_um_zyx, dtype=np.float64))
     out_z, out_y, out_x = geometry.output_shape_zyx
+    source_z, source_y, source_x = (int(v) for v in host_volume.shape)
     z_batch = max(1, min(int(deskew_prefetch), int(out_z)))
+    x_tile = min(256, int(out_x))
     threads = (4, 8, 8)
     for z_start in range(0, out_z, z_batch):
         z_stop = min(z_start + z_batch, out_z)
         local_z = z_stop - z_start
-        device_output = cuda.device_array((local_z, out_y, out_x), dtype=target_dtype)
-        blocks = (
-            math.ceil(local_z / threads[0]),
-            math.ceil(out_y / threads[1]),
-            math.ceil(out_x / threads[2]),
-        )
-        batch_start = time.perf_counter()
-        kernel[blocks, threads](
-            device_volume,
-            device_output,
-            int(z_start),
-            device_matrix,
-            device_offset,
-            device_origin,
-            device_spacing,
-        )
-        cuda.synchronize()
-        block = device_output.copy_to_host()
-        zarr_output[z_start:z_stop, :, :] = block
-        print(
-            f"  ClearEx-affine GPU z slices {z_start + 1}-{z_stop}/{out_z}: "
-            f"total={time.perf_counter() - batch_start:.2f}s",
-            flush=True,
-        )
+        for x_start in range(0, out_x, x_tile):
+            x_stop = min(x_start + x_tile, out_x)
+            local_x = x_stop - x_start
+            source_x_start, source_x_stop = _source_x_bounds_for_output_tile(
+                x_start,
+                x_stop,
+                source_x,
+            )
+            source_tile = np.ascontiguousarray(host_volume[:, :, source_x_start:source_x_stop])
+            device_volume = cuda.to_device(source_tile)
+            device_output = cuda.device_array((local_z, out_y, local_x), dtype=target_dtype)
+            blocks = (
+                math.ceil(local_z / threads[0]),
+                math.ceil(out_y / threads[1]),
+                math.ceil(local_x / threads[2]),
+            )
+            batch_start = time.perf_counter()
+            kernel[blocks, threads](
+                device_volume,
+                device_output,
+                int(z_start),
+                device_matrix,
+                device_offset,
+                device_origin,
+                device_spacing,
+                int(source_z),
+                int(source_y),
+                int(source_x),
+                0,
+                0,
+                int(source_x_start),
+                int(x_start),
+            )
+            cuda.synchronize()
+            block = device_output.copy_to_host()
+            zarr_output[z_start:z_stop, :, x_start:x_stop] = block
+            del device_volume
+            del device_output
+            print(
+                f"  ClearEx-affine GPU z slices {z_start + 1}-{z_stop}/{out_z}, "
+                f"x {x_start + 1}-{x_stop}/{out_x}: "
+                f"source_x={source_x_start}:{source_x_stop}, "
+                f"total={time.perf_counter() - batch_start:.2f}s",
+                flush=True,
+            )
     write_downsampled_pyramid(output_path, max_downsample=int(pyramid_max_downsample))
     log_progress(
         f"Finished ClearEx-affine GPU output: {output_path} "
