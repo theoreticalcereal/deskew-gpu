@@ -4,6 +4,7 @@ process BUILD_DESKEW_CONTAINER {
     cpus 2
     memory '8 GB'
     queue 'super'
+    publishDir "${params.output_dir}", mode: 'copy', pattern: 'deskew_runtime', enabled: params.export_deskew_runtime
 
     output:
     path "deskew_runtime", emit: image
@@ -121,8 +122,10 @@ process DESKEW {
         --flip ${flip} \\
         --output_dir . \\
         --deskew_backend ${params.deskew_backend} \\
+        --deskew_geometry ${params.deskew_geometry} \\
         --z_chunk ${params.z_chunk} \\
         --deskew_prefetch ${params.deskew_prefetch} \\
-        --pyramid_max_downsample ${params.pyramid_max_downsample}
+        --pyramid_max_downsample ${params.pyramid_max_downsample} \\
+        --deskew_output_dtype ${params.deskew_output_dtype}
     """
 }

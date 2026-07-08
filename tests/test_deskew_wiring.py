@@ -16,7 +16,14 @@ SCRIPTS = ROOT / "workflow" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from chunked_deskew import _materialize_volume, _write_top_shear, run_chunked_deskew
+from chunked_deskew import (
+    _clearex_affine_geometry,
+    _linear_sample_support_normalized,
+    _materialize_volume,
+    _write_clearex_affine,
+    _write_top_shear,
+    run_chunked_deskew,
+)
 from ome_zarr_io import (
     create_ome_zarr_array,
     multiscales_metadata,
@@ -46,7 +53,13 @@ class DeskewWiringTest(unittest.TestCase):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
 
         self.assertIn('publishDir "${params.output_dir}", mode: \'move\'', modules_text)
-        self.assertNotIn('publishDir "${params.output_dir}", mode: \'copy\'', modules_text)
+        self.assertIn(
+            "process DESKEW {\n"
+            "    tag \"${cell_name ?: 'deskew'}\"\n\n"
+            "    publishDir \"${params.output_dir}\", mode: 'move'",
+            modules_text,
+        )
+        self.assertNotIn("pattern: 'Top_shear'", modules_text)
 
     def test_config_exposes_optional_gpu_backend_not_psf_mode(self):
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
@@ -63,6 +76,7 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("--z_chunk ${params.z_chunk}", modules_text)
         self.assertIn("--deskew_prefetch ${params.deskew_prefetch}", modules_text)
         self.assertIn("--pyramid_max_downsample ${params.pyramid_max_downsample}", modules_text)
+        self.assertIn("--deskew_output_dtype ${params.deskew_output_dtype}", modules_text)
         self.assertNotIn("--deskew_workers", modules_text)
         self.assertNotIn("--deskew_x_block", modules_text)
         self.assertNotIn("--deskew_cpu_schedule", modules_text)
@@ -101,6 +115,29 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("params.deskew_runtime_dir", main_text)
         self.assertIn("BUILD_DESKEW_CONTAINER()", main_text)
         self.assertIn("file(params.deskew_runtime_dir, checkIfExists: true)", main_text)
+
+    def test_workflow_can_export_built_deskew_runtime_for_deconvolution(self):
+        modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
+        config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
+        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
+        schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
+
+        self.assertIn("export_deskew_runtime = false", config_text)
+        self.assertIn("params.export_deskew_runtime", modules_text)
+        self.assertIn('publishDir "${params.output_dir}", mode: \'copy\', pattern: \'deskew_runtime\'', modules_text)
+        self.assertIn("export_deskew_runtime", schema)
+        self.assertEqual(schema["export_deskew_runtime"]["type"], "boolean")
+        self.assertFalse(schema["export_deskew_runtime"]["default"])
+
+    def test_pipeline_maps_exported_runtime_to_deconvolution_runtime_parameter(self):
+        pipeline = yaml.safe_load((ROOT / "deskew_decon_neuroglancer_pipeline.yml").read_text(encoding="utf-8"))
+        first_dependency = pipeline["dependencies"][0]
+        mappings = {(mapping["source"], mapping["target"]) for mapping in first_dependency["mappings"]}
+
+        self.assertEqual(first_dependency["source_workflow"], 101)
+        self.assertEqual(first_dependency["target_workflow"], 102)
+        self.assertIn(("Top_shear/*.ome.zarr", "input"), mappings)
+        self.assertIn(("deskew_runtime", "decon_runtime_dir"), mappings)
 
     def test_processes_accept_runtime_root_or_direct_conda_env(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
@@ -183,6 +220,90 @@ class DeskewWiringTest(unittest.TestCase):
             ["z", "y", "x"],
         )
 
+    def test_clearex_affine_geometry_matches_clearex_bounds_for_reference_slab(self):
+        geometry = _clearex_affine_geometry(
+            source_shape_zyx=(500, 2024, 128),
+            dx=0.168,
+            dz=0.2,
+            angle=45.0,
+            flip=1,
+        )
+
+        self.assertEqual(geometry.output_shape_zyx, (1305, 2148, 128))
+        self.assertEqual(geometry.applied_rotation_deg_xyz, (-45.0, 0.0, 0.0))
+        self.assertAlmostEqual(geometry.shear_yz, 0.70710678118, places=6)
+        self.assertAlmostEqual(geometry.matrix_xyz[1, 2], 1.20710678118, places=6)
+
+    def test_clearex_affine_sampler_uses_half_voxel_image_domain(self):
+        volume = np.asarray([[[10.0, 20.0]]], dtype=np.float32)
+
+        self.assertAlmostEqual(
+            _linear_sample_support_normalized(volume, zf=0.0, yf=0.0, xf=-0.5),
+            10.0,
+        )
+        self.assertEqual(
+            _linear_sample_support_normalized(volume, zf=0.0, yf=0.0, xf=-0.5001),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            _linear_sample_support_normalized(volume, zf=0.0, yf=0.0, xf=1.5),
+            20.0,
+        )
+        self.assertEqual(
+            _linear_sample_support_normalized(volume, zf=0.0, yf=0.0, xf=1.5001),
+            0.0,
+        )
+
+    def test_cpu_clearex_affine_ome_zarr_is_stored_as_zyx_with_metadata(self):
+        volume = np.arange(4 * 6 * 5, dtype=np.uint16).reshape(4, 6, 5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "clearex_affine.ome.zarr"
+            with contextlib.redirect_stdout(io.StringIO()):
+                output_shape = _write_clearex_affine(
+                    volume,
+                    output,
+                    dx=1.0,
+                    dz=1.0,
+                    angle=30.0,
+                    flip=1,
+                    z_chunk=2,
+                    pyramid_max_downsample=1,
+                )
+
+            written = open_ome_zarr_array(output)
+            zattrs = json.loads((output / ".zattrs").read_text(encoding="utf-8"))
+
+        self.assertEqual(written.shape, output_shape)
+        self.assertEqual(
+            [axis["name"] for axis in zattrs["multiscales"][0]["axes"]],
+            ["z", "y", "x"],
+        )
+        self.assertIn("clearex_affine", zattrs)
+        self.assertEqual(zattrs["clearex_affine"]["voxel_size_um_zyx"], [1.0, 1.0, 1.0])
+
+    def test_cpu_clearex_affine_can_write_float32_for_clearex_parity(self):
+        volume = np.arange(4 * 6 * 5, dtype=np.uint16).reshape(4, 6, 5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "clearex_affine_float.ome.zarr"
+            with contextlib.redirect_stdout(io.StringIO()):
+                _write_clearex_affine(
+                    volume,
+                    output,
+                    dx=1.0,
+                    dz=1.0,
+                    angle=30.0,
+                    flip=1,
+                    z_chunk=2,
+                    pyramid_max_downsample=1,
+                    output_dtype="float32",
+                )
+
+            written = open_ome_zarr_array(output)
+
+        self.assertEqual(written.dtype, np.dtype("float32"))
+
     def test_run_chunked_deskew_note_reports_ome_zarr_zyx_layout(self):
         volume = np.arange(3 * 5 * 4, dtype=np.uint16).reshape(3, 5, 4)
 
@@ -209,6 +330,7 @@ class DeskewWiringTest(unittest.TestCase):
                     flip=1,
                     output_dir=str(output_dir),
                     deskew_backend="cpu_blocked",
+                    deskew_geometry="top_view",
                     z_chunk=1,
                     deskew_prefetch=1,
                     pyramid_max_downsample=1,
@@ -303,11 +425,38 @@ class DeskewWiringTest(unittest.TestCase):
                 "output",
                 "--pyramid_max_downsample",
                 "4",
+                "--deskew_geometry",
+                "clearex_affine",
+                "--deskew_output_dtype",
+                "float32",
             ])
         finally:
             chunked_module.run_chunked_deskew = old_run_chunked_deskew
 
         self.assertEqual(calls[0]["pyramid_max_downsample"], 4)
+        self.assertEqual(calls[0]["deskew_geometry"], "clearex_affine")
+        self.assertEqual(calls[0]["deskew_output_dtype"], "float32")
+
+    def test_nextflow_passes_deskew_geometry_parameter(self):
+        config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
+        modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
+
+        self.assertIn("deskew_geometry = 'top_view'", config_text)
+        self.assertIn("--deskew_geometry ${params.deskew_geometry}", modules_text)
+
+    def test_deskew_output_dtype_is_exposed_to_nextflow_and_astrocyte(self):
+        config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
+        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
+        schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
+
+        self.assertIn("deskew_output_dtype = 'uint16'", config_text)
+        self.assertIn("deskew_output_dtype", schema)
+        self.assertEqual(schema["deskew_output_dtype"]["type"], "select")
+        self.assertEqual(schema["deskew_output_dtype"]["default"], "uint16")
+        self.assertEqual(
+            [choice[0] for choice in schema["deskew_output_dtype"]["choices"]],
+            ["uint16", "float32"],
+        )
 
     def test_deskew_runtime_includes_decon_dependencies(self):
         conda_text = (ROOT / "workflow/envs/deskew-conda.txt").read_text(encoding="utf-8")

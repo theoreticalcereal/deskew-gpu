@@ -20,4 +20,6 @@ axis named `z`.
 
 The conda runtime built by `BUILD_DESKEW_CONTAINER` includes the deconvolution
 dependencies as well. Integrated pipelines can pass that runtime directory into
-`deconvolution-gpu` with `decon_runtime_dir`.
+`deconvolution-gpu` with `decon_runtime_dir`. Set `export_deskew_runtime` to
+`true` when the runtime should be copied into the published output for that
+handoff.

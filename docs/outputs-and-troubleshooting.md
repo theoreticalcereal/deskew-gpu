@@ -19,6 +19,9 @@ installed by this package.
 
 The runtime also includes the deconvolution dependencies so it can be reused by
 `deconvolution-gpu` when `decon_runtime_dir` points at the built deskew runtime.
+Set `export_deskew_runtime = true` to publish `deskew_runtime/` alongside
+`Top_shear/` for an Astrocyte pipeline dependency. Leave it `false` for
+standalone deskew runs to avoid copying the large conda environment.
 
 ## CPU/GPU Output Comparison
 
@@ -34,3 +37,30 @@ python workflow/scripts/compare_deskew_outputs.py \
 
 The script can also infer output paths and lateral pixel size from matching
 workflow parameter YAML files with `--cpu_params` and `--gpu_params`.
+
+## ClearEx Reference Comparison
+
+For ClearEx validation, run deskew with `deskew_geometry = clearex_affine` and
+`deskew_output_dtype = float32`. This matches ClearEx's physical affine
+shear/rotation output shape and preserves linear interpolation values before any
+integer rounding.
+
+ClearEx reference arrays are commonly stored as 6D `(t, p, c, z, y, x)` Zarr
+components. Compare one `(t, p, c)` volume with:
+
+```bash
+python workflow/scripts/compare_deskew_outputs.py \
+  --reference clearex_input.zarr \
+  --reference_component clearex/runtime_cache/results/shear_transform/latest/data \
+  --reference_tpc 0,0,0 \
+  --candidate output/Top_shear/sample.ome.zarr \
+  --level 0 \
+  --lateral_pixel_size 0.168 \
+  --output_json clearex-vs-deskew.json
+```
+
+Use `--trim_zyx Z,Y,X` to compare interior regions separately from boundary
+slices. If interior metrics are high but full-volume metrics are lower, inspect
+low-Z and high-Z edge bands. The ClearEx-affine sampler uses a half-voxel
+image-domain boundary convention, matching ANTs/ClearEx behavior at the first
+and last transformed slices.

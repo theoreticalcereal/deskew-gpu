@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+from dataclasses import dataclass
 import math
 from pathlib import Path
 import shutil
@@ -148,6 +149,137 @@ def _resolve_deskew_backend(value: str) -> str:
 
 
 _GPU_KERNEL = None
+_GPU_AFFINE_KERNEL = None
+_GPU_AFFINE_KERNEL_FLOAT32 = None
+
+
+@dataclass(frozen=True)
+class ClearExAffineGeometry:
+    matrix_xyz: np.ndarray
+    offset_xyz: np.ndarray
+    inverse_matrix_xyz: np.ndarray
+    inverse_offset_xyz: np.ndarray
+    output_origin_xyz: tuple[float, float, float]
+    output_shape_zyx: tuple[int, int, int]
+    voxel_size_um_zyx: tuple[float, float, float]
+    applied_rotation_deg_xyz: tuple[float, float, float]
+    shear_yz: float
+
+
+def _rotation_matrix_x(deg_x: float) -> np.ndarray:
+    theta = math.radians(float(deg_x))
+    return np.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, math.cos(theta), -math.sin(theta)],
+            [0.0, math.sin(theta), math.cos(theta)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _resolve_deskew_output_dtype(output_dtype: str | np.dtype) -> np.dtype:
+    dtype = np.dtype(output_dtype)
+    if dtype.name not in {"uint16", "float32"}:
+        raise ValueError("deskew_output_dtype must be one of: uint16, float32")
+    return dtype
+
+
+def _cast_resampled_value(value: float, *, output_dtype: np.dtype) -> float | int:
+    if np.issubdtype(output_dtype, np.integer):
+        info = np.iinfo(output_dtype)
+        return int(min(float(info.max), max(float(info.min), math.floor(float(value) + 0.5))))
+    return float(value)
+
+
+def _clearex_affine_geometry(
+    *,
+    source_shape_zyx: tuple[int, int, int],
+    dx: float,
+    dz: float,
+    angle: float,
+    flip: int,
+) -> ClearExAffineGeometry:
+    z_size, y_size, x_size = (int(v) for v in source_shape_zyx)
+    z_um, y_um, x_um = (float(dz), float(dx), float(dx))
+    flip_sign = float(flip)
+    # This mode follows the ClearEx affine contract used for the current
+    # reference comparison: shear in physical YZ, then rotate around X.
+    shear_yz = flip_sign * math.sin(math.radians(float(angle)))
+    rotation_deg_x = -flip_sign * float(angle)
+    shear_matrix = np.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, shear_yz],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    matrix_xyz = _rotation_matrix_x(rotation_deg_x) @ shear_matrix
+    center_xyz = np.asarray(
+        [
+            ((x_size - 1) * x_um) / 2.0,
+            ((y_size - 1) * y_um) / 2.0,
+            ((z_size - 1) * z_um) / 2.0,
+        ],
+        dtype=np.float64,
+    )
+    offset_xyz = center_xyz - (matrix_xyz @ center_xyz)
+    x_max = (x_size - 1) * x_um
+    y_max = (y_size - 1) * y_um
+    z_max = (z_size - 1) * z_um
+    corners_xyz = np.asarray(
+        [
+            [x, y, z]
+            for x in (0.0, float(x_max))
+            for y in (0.0, float(y_max))
+            for z in (0.0, float(z_max))
+        ],
+        dtype=np.float64,
+    )
+    transformed_xyz = (corners_xyz @ matrix_xyz.T) + offset_xyz
+    min_xyz = np.min(transformed_xyz, axis=0)
+    max_xyz = np.max(transformed_xyz, axis=0)
+    output_shape_zyx = (
+        max(1, int(math.floor((max_xyz[2] - min_xyz[2]) / z_um)) + 1),
+        max(1, int(math.floor((max_xyz[1] - min_xyz[1]) / y_um)) + 1),
+        max(1, int(math.floor((max_xyz[0] - min_xyz[0]) / x_um)) + 1),
+    )
+    inverse_matrix_xyz = np.linalg.inv(matrix_xyz)
+    inverse_offset_xyz = -inverse_matrix_xyz @ offset_xyz
+    return ClearExAffineGeometry(
+        matrix_xyz=matrix_xyz,
+        offset_xyz=offset_xyz,
+        inverse_matrix_xyz=inverse_matrix_xyz,
+        inverse_offset_xyz=inverse_offset_xyz,
+        output_origin_xyz=(float(min_xyz[0]), float(min_xyz[1]), float(min_xyz[2])),
+        output_shape_zyx=output_shape_zyx,
+        voxel_size_um_zyx=(z_um, y_um, x_um),
+        applied_rotation_deg_xyz=(float(rotation_deg_x), 0.0, 0.0),
+        shear_yz=float(shear_yz),
+    )
+
+
+def _write_clearex_affine_metadata(output_path: Path, geometry: ClearExAffineGeometry) -> None:
+    attrs_path = output_path / ".zattrs"
+    if not attrs_path.exists():
+        return
+    import json
+
+    attrs = json.loads(attrs_path.read_text(encoding="utf-8"))
+    attrs["clearex_affine"] = {
+        "voxel_size_um_zyx": [float(v) for v in geometry.voxel_size_um_zyx],
+        "output_origin_xyz_um": [float(v) for v in geometry.output_origin_xyz],
+        "affine_matrix_xyz": geometry.matrix_xyz.tolist(),
+        "affine_offset_xyz_um": geometry.offset_xyz.tolist(),
+        "inverse_affine_matrix_xyz": geometry.inverse_matrix_xyz.tolist(),
+        "inverse_affine_offset_xyz_um": geometry.inverse_offset_xyz.tolist(),
+        "applied_rotation_deg_xyz": [
+            float(v) for v in geometry.applied_rotation_deg_xyz
+        ],
+        "shear_yz": float(geometry.shear_yz),
+    }
+    attrs_path.write_text(json.dumps(attrs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _load_gpu_kernel():
@@ -557,6 +689,400 @@ def _write_top_shear_gpu(
     return output_shape
 
 
+def _linear_sample_support_normalized(
+    volume_zyx: np.ndarray,
+    *,
+    zf: float,
+    yf: float,
+    xf: float,
+) -> float:
+    z_size, y_size, x_size = volume_zyx.shape
+    if (
+        zf < -0.5
+        or zf > float(z_size) - 0.5
+        or yf < -0.5
+        or yf > float(y_size) - 0.5
+        or xf < -0.5
+        or xf > float(x_size) - 0.5
+    ):
+        return 0.0
+    z0 = int(math.floor(float(zf)))
+    y0 = int(math.floor(float(yf)))
+    x0 = int(math.floor(float(xf)))
+    wz = float(zf) - float(z0)
+    wy = float(yf) - float(y0)
+    wx = float(xf) - float(x0)
+    value = 0.0
+    support = 0.0
+    for dz_i in (0, 1):
+        zz = z0 + dz_i
+        wz_i = (1.0 - wz) if dz_i == 0 else wz
+        if zz < 0 or zz >= z_size:
+            continue
+        for dy_i in (0, 1):
+            yy = y0 + dy_i
+            wy_i = (1.0 - wy) if dy_i == 0 else wy
+            if yy < 0 or yy >= y_size:
+                continue
+            for dx_i in (0, 1):
+                xx = x0 + dx_i
+                wx_i = (1.0 - wx) if dx_i == 0 else wx
+                if xx < 0 or xx >= x_size:
+                    continue
+                weight = wz_i * wy_i * wx_i
+                support += weight
+                value += weight * float(volume_zyx[zz, yy, xx])
+    if support <= 1.0e-3:
+        return 0.0
+    return value / support
+
+
+def _write_clearex_affine(
+    volume_zyx,
+    output_path: Path,
+    *,
+    dx: float,
+    dz: float,
+    angle: float,
+    flip: int,
+    z_chunk: int,
+    pyramid_max_downsample: int,
+    output_dtype: str | np.dtype = "uint16",
+) -> tuple[int, int, int]:
+    start_time = time.perf_counter()
+    target_dtype = _resolve_deskew_output_dtype(output_dtype)
+    host_volume = _materialize_volume(
+        volume_zyx,
+        message="Materializing input volume for ClearEx-affine CPU resampling",
+    ).astype(np.float32, copy=False)
+    geometry = _clearex_affine_geometry(
+        source_shape_zyx=tuple(int(v) for v in host_volume.shape),
+        dx=float(dx),
+        dz=float(dz),
+        angle=float(angle),
+        flip=int(flip),
+    )
+    print(
+        "ClearEx-affine CPU geometry: "
+        f"input_zyx={host_volume.shape}, output_zyx={geometry.output_shape_zyx}, "
+        f"shear_yz={geometry.shear_yz:.6g}, "
+        f"rotation_x={geometry.applied_rotation_deg_xyz[0]:.6g}",
+        flush=True,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_ome_zarr = is_ome_zarr_path(output_path)
+    if write_ome_zarr:
+        zarr_output = create_ome_zarr_array(
+            output_path,
+            shape=geometry.output_shape_zyx,
+            chunks=(
+                min(16, geometry.output_shape_zyx[0]),
+                min(256, geometry.output_shape_zyx[1]),
+                min(256, geometry.output_shape_zyx[2]),
+            ),
+            dtype=target_dtype,
+            layer_name=image_stem(output_path),
+            max_downsample=int(pyramid_max_downsample),
+        )
+        _write_clearex_affine_metadata(output_path, geometry)
+    else:
+        zarr_output = None
+
+    z_um, y_um, x_um = geometry.voxel_size_um_zyx
+    out_z, out_y, out_x = geometry.output_shape_zyx
+    z_chunk = max(1, int(z_chunk))
+    for z_start in range(0, out_z, z_chunk):
+        z_stop = min(z_start + z_chunk, out_z)
+        block = np.zeros((z_stop - z_start, out_y, out_x), dtype=target_dtype)
+        for local_z, z_index in enumerate(range(z_start, z_stop)):
+            out_z_um = geometry.output_origin_xyz[2] + (float(z_index) * z_um)
+            for y_index in range(out_y):
+                out_y_um = geometry.output_origin_xyz[1] + (float(y_index) * y_um)
+                for x_index in range(out_x):
+                    out_x_um = geometry.output_origin_xyz[0] + (float(x_index) * x_um)
+                    sx, sy, sz = (
+                        geometry.inverse_matrix_xyz
+                        @ np.asarray([out_x_um, out_y_um, out_z_um], dtype=np.float64)
+                    ) + geometry.inverse_offset_xyz
+                    value = _linear_sample_support_normalized(
+                        host_volume,
+                        zf=float(sz / z_um),
+                        yf=float(sy / y_um),
+                        xf=float(sx / x_um),
+                    )
+                    block[local_z, y_index, x_index] = _cast_resampled_value(
+                        value,
+                        output_dtype=target_dtype,
+                    )
+        if zarr_output is not None:
+            zarr_output[z_start:z_stop, :, :] = block
+        else:
+            mode = "wb" if z_start == 0 else "ab"
+            tifffile.imwrite(output_path, block, bigtiff=True, append=(mode == "ab"))
+        log_progress(f"Wrote ClearEx-affine CPU z slices {z_start + 1}-{z_stop}/{out_z}")
+    if write_ome_zarr:
+        write_downsampled_pyramid(output_path, max_downsample=int(pyramid_max_downsample))
+    log_progress(
+        f"Finished ClearEx-affine CPU output: {output_path} "
+        f"in {time.perf_counter() - start_time:.2f}s"
+    )
+    return geometry.output_shape_zyx
+
+
+def _load_gpu_affine_kernel(*, output_dtype: np.dtype):
+    global _GPU_AFFINE_KERNEL, _GPU_AFFINE_KERNEL_FLOAT32
+    try:
+        from numba import cuda
+    except ImportError as exc:
+        raise RuntimeError(
+            "deskew_backend=gpu requires numba; use --deskew_backend cpu_blocked "
+            "for the CPU reference path"
+        ) from exc
+
+    if not cuda.is_available():
+        raise RuntimeError(
+            "deskew_backend=gpu requested, but no CUDA device is available; "
+            "use --deskew_backend cpu_blocked to run the CPU reference path"
+        )
+
+    if _GPU_AFFINE_KERNEL is None or _GPU_AFFINE_KERNEL_FLOAT32 is None:
+
+        @cuda.jit(device=True)
+        def affine_sample(volume, zf, yf, xf):
+            z_size = volume.shape[0]
+            y_size = volume.shape[1]
+            x_size = volume.shape[2]
+            if (
+                zf < -0.5
+                or zf > float(z_size) - 0.5
+                or yf < -0.5
+                or yf > float(y_size) - 0.5
+                or xf < -0.5
+                or xf > float(x_size) - 0.5
+            ):
+                return 0.0
+            z0 = int(math.floor(zf))
+            y0 = int(math.floor(yf))
+            x0 = int(math.floor(xf))
+            wz = zf - float(z0)
+            wy = yf - float(y0)
+            wx = xf - float(x0)
+            value = 0.0
+            support = 0.0
+            for dz_i in range(2):
+                zz = z0 + dz_i
+                wz_i = (1.0 - wz) if dz_i == 0 else wz
+                if zz < 0 or zz >= z_size:
+                    continue
+                for dy_i in range(2):
+                    yy = y0 + dy_i
+                    wy_i = (1.0 - wy) if dy_i == 0 else wy
+                    if yy < 0 or yy >= y_size:
+                        continue
+                    for dx_i in range(2):
+                        xx = x0 + dx_i
+                        wx_i = (1.0 - wx) if dx_i == 0 else wx
+                        if xx < 0 or xx >= x_size:
+                            continue
+                        weight = wz_i * wy_i * wx_i
+                        support += weight
+                        value += weight * float(volume[zz, yy, xx])
+            if support <= 1.0e-3:
+                return 0.0
+            return value / support
+
+        @cuda.jit
+        def cuda_clearex_affine_uint16(
+            volume,
+            output,
+            z_start,
+            inv_matrix,
+            inv_offset,
+            out_origin,
+            spacing,
+        ):
+            z_local, y_index, x_index = cuda.grid(3)
+            if z_local >= output.shape[0] or y_index >= output.shape[1] or x_index >= output.shape[2]:
+                return
+
+            z_index = z_start + z_local
+            out_x = out_origin[0] + (float(x_index) * spacing[2])
+            out_y = out_origin[1] + (float(y_index) * spacing[1])
+            out_z = out_origin[2] + (float(z_index) * spacing[0])
+
+            src_x = (
+                inv_matrix[0, 0] * out_x
+                + inv_matrix[0, 1] * out_y
+                + inv_matrix[0, 2] * out_z
+                + inv_offset[0]
+            )
+            src_y = (
+                inv_matrix[1, 0] * out_x
+                + inv_matrix[1, 1] * out_y
+                + inv_matrix[1, 2] * out_z
+                + inv_offset[1]
+            )
+            src_z = (
+                inv_matrix[2, 0] * out_x
+                + inv_matrix[2, 1] * out_y
+                + inv_matrix[2, 2] * out_z
+                + inv_offset[2]
+            )
+            value = affine_sample(
+                volume,
+                src_z / spacing[0],
+                src_y / spacing[1],
+                src_x / spacing[2],
+            )
+            if value < 0.0:
+                output[z_local, y_index, x_index] = 0
+            elif value > 65535.0:
+                output[z_local, y_index, x_index] = 65535
+            else:
+                output[z_local, y_index, x_index] = int(math.floor(value + 0.5))
+
+        @cuda.jit
+        def cuda_clearex_affine_float32(
+            volume,
+            output,
+            z_start,
+            inv_matrix,
+            inv_offset,
+            out_origin,
+            spacing,
+        ):
+            z_local, y_index, x_index = cuda.grid(3)
+            if z_local >= output.shape[0] or y_index >= output.shape[1] or x_index >= output.shape[2]:
+                return
+
+            z_index = z_start + z_local
+            out_x = out_origin[0] + (float(x_index) * spacing[2])
+            out_y = out_origin[1] + (float(y_index) * spacing[1])
+            out_z = out_origin[2] + (float(z_index) * spacing[0])
+
+            src_x = (
+                inv_matrix[0, 0] * out_x
+                + inv_matrix[0, 1] * out_y
+                + inv_matrix[0, 2] * out_z
+                + inv_offset[0]
+            )
+            src_y = (
+                inv_matrix[1, 0] * out_x
+                + inv_matrix[1, 1] * out_y
+                + inv_matrix[1, 2] * out_z
+                + inv_offset[1]
+            )
+            src_z = (
+                inv_matrix[2, 0] * out_x
+                + inv_matrix[2, 1] * out_y
+                + inv_matrix[2, 2] * out_z
+                + inv_offset[2]
+            )
+            output[z_local, y_index, x_index] = affine_sample(
+                volume,
+                src_z / spacing[0],
+                src_y / spacing[1],
+                src_x / spacing[2],
+            )
+
+        _GPU_AFFINE_KERNEL = cuda_clearex_affine_uint16
+        _GPU_AFFINE_KERNEL_FLOAT32 = cuda_clearex_affine_float32
+    if np.dtype(output_dtype).name == "float32":
+        return cuda, _GPU_AFFINE_KERNEL_FLOAT32
+    return cuda, _GPU_AFFINE_KERNEL
+
+
+def _write_clearex_affine_gpu(
+    volume_zyx,
+    output_path: Path,
+    *,
+    dx: float,
+    dz: float,
+    angle: float,
+    flip: int,
+    deskew_prefetch: int,
+    pyramid_max_downsample: int,
+    output_dtype: str | np.dtype = "uint16",
+) -> tuple[int, int, int]:
+    start_time = time.perf_counter()
+    target_dtype = _resolve_deskew_output_dtype(output_dtype)
+    cuda, kernel = _load_gpu_affine_kernel(output_dtype=target_dtype)
+    host_volume = _materialize_volume(
+        volume_zyx,
+        message="Materializing input volume for ClearEx-affine GPU transfer",
+    ).astype(np.float32, copy=False)
+    geometry = _clearex_affine_geometry(
+        source_shape_zyx=tuple(int(v) for v in host_volume.shape),
+        dx=float(dx),
+        dz=float(dz),
+        angle=float(angle),
+        flip=int(flip),
+    )
+    print(
+        "ClearEx-affine GPU geometry: "
+        f"input_zyx={host_volume.shape}, output_zyx={geometry.output_shape_zyx}, "
+        f"shear_yz={geometry.shear_yz:.6g}, "
+        f"rotation_x={geometry.applied_rotation_deg_xyz[0]:.6g}",
+        flush=True,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    zarr_output = create_ome_zarr_array(
+        output_path,
+        shape=geometry.output_shape_zyx,
+        chunks=(
+            min(16, geometry.output_shape_zyx[0]),
+            min(256, geometry.output_shape_zyx[1]),
+            min(256, geometry.output_shape_zyx[2]),
+        ),
+        dtype=target_dtype,
+        layer_name=image_stem(output_path),
+        max_downsample=int(pyramid_max_downsample),
+    )
+    _write_clearex_affine_metadata(output_path, geometry)
+
+    device_volume = cuda.to_device(np.ascontiguousarray(host_volume))
+    device_matrix = cuda.to_device(np.asarray(geometry.inverse_matrix_xyz, dtype=np.float64))
+    device_offset = cuda.to_device(np.asarray(geometry.inverse_offset_xyz, dtype=np.float64))
+    device_origin = cuda.to_device(np.asarray(geometry.output_origin_xyz, dtype=np.float64))
+    device_spacing = cuda.to_device(np.asarray(geometry.voxel_size_um_zyx, dtype=np.float64))
+    out_z, out_y, out_x = geometry.output_shape_zyx
+    z_batch = max(1, min(int(deskew_prefetch), int(out_z)))
+    threads = (4, 8, 8)
+    for z_start in range(0, out_z, z_batch):
+        z_stop = min(z_start + z_batch, out_z)
+        local_z = z_stop - z_start
+        device_output = cuda.device_array((local_z, out_y, out_x), dtype=target_dtype)
+        blocks = (
+            math.ceil(local_z / threads[0]),
+            math.ceil(out_y / threads[1]),
+            math.ceil(out_x / threads[2]),
+        )
+        batch_start = time.perf_counter()
+        kernel[blocks, threads](
+            device_volume,
+            device_output,
+            int(z_start),
+            device_matrix,
+            device_offset,
+            device_origin,
+            device_spacing,
+        )
+        cuda.synchronize()
+        block = device_output.copy_to_host()
+        zarr_output[z_start:z_stop, :, :] = block
+        print(
+            f"  ClearEx-affine GPU z slices {z_start + 1}-{z_stop}/{out_z}: "
+            f"total={time.perf_counter() - batch_start:.2f}s",
+            flush=True,
+        )
+    write_downsampled_pyramid(output_path, max_downsample=int(pyramid_max_downsample))
+    log_progress(
+        f"Finished ClearEx-affine GPU output: {output_path} "
+        f"in {time.perf_counter() - start_time:.2f}s"
+    )
+    return geometry.output_shape_zyx
+
+
 def run_chunked_deskew(
     *,
     image_path: str,
@@ -567,9 +1093,11 @@ def run_chunked_deskew(
     flip: int,
     output_dir: str,
     deskew_backend: str,
+    deskew_geometry: str,
     z_chunk: int,
     deskew_prefetch: int,
     pyramid_max_downsample: int,
+    deskew_output_dtype: str = "uint16",
 ) -> None:
     run_start = time.perf_counter()
     input_dir = _selected_input_dir(image_path, cell_name)
@@ -588,9 +1116,47 @@ def run_chunked_deskew(
         log_progress(f"Processing deskew input {index}/{len(inputs)}: {path.name}")
         volume = _open_volume(path)
         log_progress(f"Opened {path.name}: shape={volume.shape}, dtype={volume.dtype}")
-        output_name = f"{image_stem(path)}.ome.zarr" if is_ome_zarr_path(path) else f"{image_stem(path)}.tif"
+        geometry_mode = str(deskew_geometry or "top_view").strip().lower().replace("-", "_")
+        if geometry_mode not in {"top_view", "clearex_affine"}:
+            raise ValueError("deskew_geometry must be one of: top_view, clearex_affine")
+        output_dtype = _resolve_deskew_output_dtype(deskew_output_dtype)
+        if geometry_mode == "top_view" and output_dtype.name != "uint16":
+            raise ValueError("deskew_output_dtype=float32 is only supported with clearex_affine geometry")
+        output_name = (
+            f"{image_stem(path)}.ome.zarr"
+            if is_ome_zarr_path(path) or geometry_mode == "clearex_affine"
+            else f"{image_stem(path)}.tif"
+        )
         backend = _resolve_deskew_backend(deskew_backend)
-        if backend == "gpu":
+        if geometry_mode == "clearex_affine" and backend == "gpu":
+            output_shape = _write_clearex_affine_gpu(
+                volume,
+                top_shear_dir / output_name,
+                dx=float(dx),
+                dz=float(dz),
+                angle=float(angle),
+                flip=int(flip),
+                deskew_prefetch=int(deskew_prefetch),
+                pyramid_max_downsample=int(pyramid_max_downsample),
+                output_dtype=output_dtype,
+            )
+            note_prefix = "ClearEx-affine GPU deskew output. "
+            note_shape = f"output_zyx={output_shape}; "
+        elif geometry_mode == "clearex_affine":
+            output_shape = _write_clearex_affine(
+                volume,
+                top_shear_dir / output_name,
+                dx=float(dx),
+                dz=float(dz),
+                angle=float(angle),
+                flip=int(flip),
+                z_chunk=int(z_chunk),
+                pyramid_max_downsample=int(pyramid_max_downsample),
+                output_dtype=output_dtype,
+            )
+            note_prefix = "ClearEx-affine CPU deskew output. "
+            note_shape = f"output_zyx={output_shape}; "
+        elif backend == "gpu":
             output_shape = _write_top_shear_gpu(
                 volume,
                 top_shear_dir / output_name,
@@ -600,6 +1166,11 @@ def run_chunked_deskew(
                 flip=int(flip),
                 deskew_prefetch=int(deskew_prefetch),
                 pyramid_max_downsample=int(pyramid_max_downsample),
+            )
+            note_prefix = "Chunked top-view deskew output. "
+            note_shape = (
+                f"output_yzx={output_shape}; "
+                f"ome_zarr_level0_zyx={(output_shape[1], output_shape[0], output_shape[2])}; "
             )
         else:
             output_shape = _write_top_shear(
@@ -612,11 +1183,15 @@ def run_chunked_deskew(
                 z_chunk=int(z_chunk),
                 pyramid_max_downsample=int(pyramid_max_downsample),
             )
+            note_prefix = "Chunked top-view deskew output. "
+            note_shape = (
+                f"output_yzx={output_shape}; "
+                f"ome_zarr_level0_zyx={(output_shape[1], output_shape[0], output_shape[2])}; "
+            )
         (top_shear_dir / "note.txt").write_text(
-            "Chunked top-view deskew output. "
-            f"output_yzx={output_shape}; "
-            f"ome_zarr_level0_zyx={(output_shape[1], output_shape[0], output_shape[2])}; "
-            "z pixel = x(y) pixel.\n"
+            note_prefix
+            + note_shape
+            + "z pixel = x(y) pixel.\n"
         )
         log_progress(
             f"Finished deskew input {path.name}: output={output_name}, "
@@ -641,8 +1216,19 @@ def main(argv: list[str] | None = None) -> None:
         default="cpu_blocked",
         choices=["gpu", "cpu", "cpu_blocked", "cpu_block", "cuda"],
     )
+    parser.add_argument(
+        "--deskew_geometry",
+        default="top_view",
+        choices=["top_view", "clearex_affine"],
+    )
     parser.add_argument("--deskew_prefetch", type=int, default=64)
     parser.add_argument("--pyramid_max_downsample", type=int, default=16)
+    parser.add_argument(
+        "--deskew_output_dtype",
+        default="uint16",
+        choices=["uint16", "float32"],
+        help="Output dtype; float32 matches ClearEx affine output and is only supported with clearex_affine",
+    )
     args = parser.parse_args(argv)
     if args.cell_index:
         print("cell_index is accepted for compatibility but ignored by chunked deskew.", flush=True)
@@ -655,9 +1241,11 @@ def main(argv: list[str] | None = None) -> None:
         flip=args.flip,
         output_dir=args.output_dir,
         deskew_backend=_resolve_deskew_backend(args.deskew_backend),
+        deskew_geometry=args.deskew_geometry,
         z_chunk=max(1, args.z_chunk),
         deskew_prefetch=max(1, args.deskew_prefetch),
         pyramid_max_downsample=max(1, args.pyramid_max_downsample),
+        deskew_output_dtype=args.deskew_output_dtype,
     )
 
 

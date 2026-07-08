@@ -20,12 +20,24 @@
 `angle` defaults to `40` degrees and `flip` defaults to `1`. Adjust these for
 datasets acquired with different scanner geometry.
 
+`deskew_geometry` defaults to `top_view`, the MATLAB-compatible output geometry.
+Use `clearex_affine` to write a ClearEx-style physical affine output in `z, y,
+x` order. In that mode, `angle` and `flip` are converted to the ClearEx affine
+shear/rotation model and outputs are written as OME-Zarr.
+
+`deskew_output_dtype` defaults to `uint16`. Use `float32` with
+`clearex_affine` geometry when comparing against ClearEx, because ClearEx keeps
+linear interpolation output as `float32` unless an integer `output_dtype` is
+requested.
+
 ## Runtime Backend
 
 `deskew_backend` defaults to `cpu_blocked`. Use `gpu` or `cuda` to run the
 Numba CUDA backend and request one Slurm GPU. CPU runs always compute and write
-one output X page at a time. Use `z_chunk` to tune the CPU sampling tile depth.
-GPU runs use `deskew_prefetch` as the output-page batch size.
+one output X page at a time for `top_view` geometry. Use `z_chunk` to tune the
+CPU sampling tile depth. GPU runs use `deskew_prefetch` as the output-page batch
+size for `top_view` geometry and as the output-Z batch size for
+`clearex_affine` geometry.
 
 `pyramid_max_downsample` controls the largest XY OME-Zarr pyramid factor written
 after deskewing. The default `16` preserves the full `1x, 2x, 4x, 8x, 16x`

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import numpy as np
+import zarr
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ from compare_deskew_outputs import (
     comparison_from_yaml_files,
     main,
     normalized_cross_correlation,
+    parse_trim_zyx,
     sample_indices,
     compare_outputs,
 )
@@ -81,7 +83,7 @@ class CompareDeskewOutputsTest(unittest.TestCase):
         candidate = reference.copy()
         old_open_volume = compare_module._open_volume
 
-        def fake_open_volume(path, *, level="0"):
+        def fake_open_volume(path, *, level="0", component=None, tpc=(0, 0, 0)):
             return reference if Path(path).name == "cpu" else candidate
 
         compare_module._open_volume = fake_open_volume
@@ -189,6 +191,130 @@ class CompareDeskewOutputsTest(unittest.TestCase):
         self.assertEqual(calls[0]["candidate_path"], Path("gpu_out/Top_shear/sample.ome.zarr"))
         self.assertEqual(calls[0]["sample_count"], 3)
         self.assertEqual(calls[0]["lateral_pixel_size"], 0.2)
+
+    def test_compare_outputs_accepts_clearex_6d_reference_component(self):
+        data = np.arange(1 * 1 * 1 * 2 * 9 * 9, dtype=np.float32).reshape(
+            (1, 1, 1, 2, 9, 9)
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            reference_path = tmp_path / "clearex_store.zarr"
+            candidate_path = tmp_path / "candidate.ome.zarr"
+            component = "clearex/runtime_cache/results/shear_transform/latest/data"
+
+            root = zarr.open_group(str(reference_path), mode="w")
+            reference = root.create_dataset(
+                component,
+                data=data,
+                chunks=(1, 1, 1, 1, 9, 9),
+                overwrite=True,
+            )
+            reference.attrs["axes"] = ["t", "p", "c", "z", "y", "x"]
+            reference.attrs["voxel_size_um_zyx"] = [2.0, 0.5, 0.5]
+            reference.attrs["affine_matrix_xyz"] = np.eye(3).tolist()
+
+            candidate = zarr.open(
+                str(candidate_path / "0"),
+                mode="w",
+                shape=data.shape[3:],
+                chunks=(1, 9, 9),
+                dtype=data.dtype,
+            )
+            candidate[:] = data[0, 0, 0]
+
+            summary = compare_outputs(
+                reference_path=reference_path,
+                candidate_path=candidate_path,
+                reference_component=component,
+                sample_count=1,
+            )
+
+        self.assertEqual(summary["shape"], (2, 9, 9))
+        self.assertEqual(summary["metadata"]["reference"]["component"], component)
+        self.assertEqual(
+            summary["metadata"]["reference"]["axes"],
+            ["t", "p", "c", "z", "y", "x"],
+        )
+        self.assertEqual(summary["metadata"]["reference"]["voxel_size_um_zyx"], [2.0, 0.5, 0.5])
+        self.assertEqual(summary["metadata"]["candidate"]["path"], str(candidate_path))
+
+    def test_compare_outputs_can_trim_edges_before_sampling(self):
+        import compare_deskew_outputs as compare_module
+
+        reference = np.ones((6, 5, 4), dtype=np.float32)
+        reference[0, :, :] = 100.0
+        reference[-1, :, :] = 200.0
+        candidate = reference.copy()
+        old_open_volume = compare_module._open_volume
+
+        def fake_open_volume(path, *, level="0", component=None, tpc=(0, 0, 0)):
+            return reference if Path(path).name == "cpu" else candidate
+
+        compare_module._open_volume = fake_open_volume
+        try:
+            summary = compare_outputs(
+                reference_path=Path("cpu"),
+                candidate_path=Path("gpu"),
+                sample_count=4,
+                trim_zyx=(1, 0, 0),
+            )
+        finally:
+            compare_module._open_volume = old_open_volume
+
+        self.assertEqual(summary["original_shape"], (6, 5, 4))
+        self.assertEqual(summary["shape"], (4, 5, 4))
+        self.assertEqual(summary["crop"]["zyx"], [[1, 5], [0, 5], [0, 4]])
+        self.assertEqual([page["i"] for page in summary["pages"]], [1, 2, 3, 4])
+        self.assertAlmostEqual(summary["brightness"]["reference_mean"], 1.0)
+
+    def test_parse_trim_zyx_requires_three_nonnegative_values(self):
+        self.assertEqual(parse_trim_zyx("32,0,1"), (32, 0, 1))
+        with self.assertRaisesRegex(ValueError, "three comma-separated"):
+            parse_trim_zyx("32,0")
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            parse_trim_zyx("-1,0,0")
+
+    def test_main_accepts_reference_component_cli(self):
+        import compare_deskew_outputs as compare_module
+
+        old_compare_outputs = compare_module.compare_outputs
+        calls = []
+
+        def fake_compare_outputs(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+        compare_module.compare_outputs = fake_compare_outputs
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                main([
+                    "--reference",
+                    "clearex_store.zarr",
+                    "--candidate",
+                    "candidate.ome.zarr",
+                    "--reference_component",
+                    "clearex/runtime_cache/results/shear_transform/latest/data",
+                    "--reference_tpc",
+                    "1,2,3",
+                    "--sample_count",
+                    "4",
+                    "--trim_zyx",
+                    "32,0,0",
+                ])
+        finally:
+            compare_module.compare_outputs = old_compare_outputs
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["reference_path"], Path("clearex_store.zarr"))
+        self.assertEqual(calls[0]["candidate_path"], Path("candidate.ome.zarr"))
+        self.assertEqual(
+            calls[0]["reference_component"],
+            "clearex/runtime_cache/results/shear_transform/latest/data",
+        )
+        self.assertEqual(calls[0]["reference_tpc"], (1, 2, 3))
+        self.assertEqual(calls[0]["sample_count"], 4)
+        self.assertEqual(calls[0]["trim_zyx"], (32, 0, 0))
 
     def test_open_volume_reports_missing_comparison_output(self):
         import compare_deskew_outputs as compare_module

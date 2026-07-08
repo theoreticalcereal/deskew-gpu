@@ -84,6 +84,24 @@ workflow_parameters:
       - [ 'gpu', 'GPU deskew' ]
       - [ 'cpu_blocked', 'CPU blocked reference (SLOW)' ]
 
+  - id: deskew_geometry
+    type: select
+    required: false
+    default: 'top_view'
+    description: Deskew geometry model.
+    choices:
+      - [ 'top_view', 'MATLAB top-view geometry' ]
+      - [ 'clearex_affine', 'ClearEx affine geometry' ]
+
+  - id: deskew_output_dtype
+    type: select
+    required: false
+    default: 'uint16'
+    description: Deskew output dtype. Use float32 with ClearEx affine geometry to match ClearEx interpolation output.
+    choices:
+      - [ 'uint16', 'uint16' ]
+      - [ 'float32', 'float32' ]
+
   - id: z_chunk
     type: integer
     required: false
@@ -103,3 +121,9 @@ workflow_parameters:
     required: false
     default: ''
     description: Optional prebuilt runtime path; leave empty to build the workflow runtime.
+
+  - id: export_deskew_runtime
+    type: boolean
+    required: false
+    default: false
+    description: Copy the built deskew runtime into the output directory so downstream deconvolution can reuse it.

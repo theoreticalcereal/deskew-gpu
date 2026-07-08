@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare CPU and GPU deskew outputs with intensity and structure metrics."""
+"""Compare reference and candidate deskew outputs with intensity and structure metrics."""
 
 from __future__ import annotations
 
@@ -16,6 +16,60 @@ import zarr
 
 
 FWHM_FACTOR = float(2.0 * np.sqrt(2.0 * np.log(2.0)))
+_METADATA_KEYS = (
+    "axes",
+    "voxel_size_um_zyx",
+    "voxel_size_resolution_source",
+    "output_origin_xyz_um",
+    "affine_matrix_xyz",
+    "affine_offset_xyz_um",
+    "inverse_affine_matrix_xyz",
+    "inverse_affine_offset_xyz_um",
+    "applied_rotation_deg_xyz",
+    "multiscales",
+)
+
+
+class ZarrComponentVolume:
+    """Expose one ``(t,p,c,z,y,x)`` Zarr component as a 3-D ``(z,y,x)`` volume."""
+
+    def __init__(
+        self,
+        path: Path,
+        component: str,
+        *,
+        tpc: tuple[int, int, int] = (0, 0, 0),
+    ) -> None:
+        self.path = Path(path)
+        self.component = str(component).strip()
+        self.tpc = tuple(int(v) for v in tpc)
+        root = zarr.open_group(str(self.path), mode="r")
+        try:
+            self.array = root[self.component]
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"Comparison component not found: {self.component} in {self.path}"
+            ) from exc
+        component_shape = tuple(int(v) for v in self.array.shape)
+        if len(component_shape) != 6:
+            raise ValueError(
+                "Component comparisons expect ClearEx-style 6-D data "
+                f"(t,p,c,z,y,x), got shape {component_shape} for {self.component}"
+            )
+        for axis_name, index, size in zip(("t", "p", "c"), self.tpc, component_shape[:3]):
+            if index < 0 or index >= size:
+                raise IndexError(
+                    f"{axis_name} index {index} is outside component shape {component_shape}"
+                )
+        self.shape = component_shape[3:]
+
+    def __getitem__(self, selection: Any) -> Any:
+        if not isinstance(selection, tuple):
+            selection = (selection,)
+        selection = tuple(selection)
+        if len(selection) != 3:
+            raise IndexError(f"Expected 3-D zyx selection, got {selection!r}")
+        return self.array[(self.tpc[0], self.tpc[1], self.tpc[2], *selection)]
 
 
 def _image_stem(path: str | Path) -> str:
@@ -67,6 +121,34 @@ def comparison_from_yaml_files(cpu_params_path: Path, gpu_params_path: Path) -> 
         "candidate_path": _output_path_from_params(gpu_params, params_path=gpu_params_path),
         "lateral_pixel_size": float(lateral_pixel_size),
     }
+
+
+def parse_tpc_indices(value: str | tuple[int, int, int] | list[int] | None) -> tuple[int, int, int]:
+    """Parse a ``t,p,c`` index triple."""
+    if value is None or value == "":
+        return (0, 0, 0)
+    if isinstance(value, (tuple, list)):
+        parts = [int(v) for v in value]
+    else:
+        parts = [int(part.strip()) for part in str(value).split(",") if part.strip()]
+    if len(parts) != 3:
+        raise ValueError(f"Expected three comma-separated t,p,c indices, got {value!r}")
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
+
+
+def parse_trim_zyx(value: str | tuple[int, int, int] | list[int] | None) -> tuple[int, int, int]:
+    """Parse a ``z,y,x`` edge-trim triple."""
+    if value is None or value == "":
+        return (0, 0, 0)
+    if isinstance(value, (tuple, list)):
+        parts = [int(v) for v in value]
+    else:
+        parts = [int(part.strip()) for part in str(value).split(",") if part.strip()]
+    if len(parts) != 3:
+        raise ValueError(f"Expected three comma-separated z,y,x trim values, got {value!r}")
+    if any(part < 0 for part in parts):
+        raise ValueError(f"trim_zyx values must be non-negative, got {value!r}")
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def sample_indices(size: int, count: int) -> list[int]:
@@ -276,19 +358,87 @@ def _nan_summary(values: list[float]) -> dict[str, float]:
     }
 
 
-def _open_volume(path: Path, *, level: str = "0") -> Any:
+def _open_volume(
+    path: Path,
+    *,
+    level: str = "0",
+    component: str | None = None,
+    tpc: tuple[int, int, int] = (0, 0, 0),
+) -> Any:
     if not path.exists():
         raise FileNotFoundError(
             f"Comparison input not found: {path}. Run both deskew workflows first "
             "or pass explicit --cpu/--gpu output paths."
         )
+    if component is not None and str(component).strip():
+        return ZarrComponentVolume(path, str(component), tpc=tpc)
     if path.name.lower().endswith(".ome.zarr"):
         return zarr.open(str(path / str(level)), mode="r")
     return tifffile.memmap(str(path), mode="r")
 
 
-def _slice_page(volume: Any, axis: int, index: int) -> np.ndarray:
-    selection: list[Any] = [slice(None), slice(None), slice(None)]
+def _metadata_for_volume(
+    path: Path,
+    *,
+    level: str = "0",
+    component: str | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"path": str(path)}
+    if component is not None and str(component).strip():
+        root = zarr.open_group(str(path), mode="r")
+        array = root[str(component)]
+        metadata["component"] = str(component)
+        metadata["shape"] = tuple(int(v) for v in array.shape)
+        for key in _METADATA_KEYS:
+            if key in array.attrs:
+                metadata[key] = _json_safe(array.attrs[key])
+        return metadata
+
+    if path.name.lower().endswith(".ome.zarr"):
+        metadata["level"] = str(level)
+        array = zarr.open(str(path / str(level)), mode="r")
+        metadata["shape"] = tuple(int(v) for v in array.shape)
+        zattrs_path = path / ".zattrs"
+        if zattrs_path.exists():
+            try:
+                attrs = json.loads(zattrs_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                attrs = {}
+            for key in _METADATA_KEYS:
+                if key in attrs:
+                    metadata[key] = _json_safe(attrs[key])
+    return metadata
+
+
+def _crop_from_trim(
+    shape: tuple[int, int, int],
+    trim_zyx: tuple[int, int, int],
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    starts = tuple(int(v) for v in trim_zyx)
+    stops = tuple(int(size) - int(trim) for size, trim in zip(shape, trim_zyx))
+    for axis_name, start, stop, size in zip(("z", "y", "x"), starts, stops, shape):
+        if start >= stop:
+            raise ValueError(
+                f"trim_zyx removes all data along {axis_name}: "
+                f"shape={shape}, trim_zyx={trim_zyx}"
+            )
+        if start < 0 or stop > size:
+            raise ValueError(f"Invalid trim_zyx={trim_zyx} for shape={shape}")
+    return starts, stops
+
+
+def _slice_page(
+    volume: Any,
+    axis: int,
+    index: int,
+    *,
+    crop_zyx: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+) -> np.ndarray:
+    if crop_zyx is None:
+        selection: list[Any] = [slice(None), slice(None), slice(None)]
+    else:
+        starts, stops = crop_zyx
+        selection = [slice(start, stop) for start, stop in zip(starts, stops)]
     selection[int(axis)] = int(index)
     return np.asarray(volume[tuple(selection)])
 
@@ -312,15 +462,30 @@ def compare_outputs(
     reference_path: Path,
     candidate_path: Path,
     output_json: Optional[Path] = None,
+    reference_component: str | None = None,
+    candidate_component: str | None = None,
+    reference_tpc: tuple[int, int, int] = (0, 0, 0),
+    candidate_tpc: tuple[int, int, int] = (0, 0, 0),
     sample_axis: int = 0,
     sample_count: int = 32,
     level: str = "0",
     ignore_zero: bool = False,
     lateral_pixel_size: float = 1.0,
+    trim_zyx: tuple[int, int, int] = (0, 0, 0),
 ) -> dict[str, Any]:
     """Compare two 3-D deskew outputs and write compact JSON metrics."""
-    reference = _open_volume(reference_path, level=level)
-    candidate = _open_volume(candidate_path, level=level)
+    reference = _open_volume(
+        reference_path,
+        level=level,
+        component=reference_component,
+        tpc=reference_tpc,
+    )
+    candidate = _open_volume(
+        candidate_path,
+        level=level,
+        component=candidate_component,
+        tpc=candidate_tpc,
+    )
     reference_shape = tuple(int(v) for v in reference.shape)
     candidate_shape = tuple(int(v) for v in candidate.shape)
     if reference_shape != candidate_shape:
@@ -334,15 +499,21 @@ def compare_outputs(
     if axis < 0 or axis >= 3:
         raise ValueError(f"sample_axis must be 0, 1, or 2; got {sample_axis}")
 
-    indices = sample_indices(reference_shape[axis], int(sample_count))
+    trim = parse_trim_zyx(trim_zyx)
+    crop_zyx = _crop_from_trim(reference_shape, trim)
+    crop_starts, crop_stops = crop_zyx
+    comparison_shape = tuple(stop - start for start, stop in zip(crop_starts, crop_stops))
+
+    indices = sample_indices(comparison_shape[axis], int(sample_count))
     rows: list[dict[str, Any]] = []
     profile_rows: list[dict[str, Any]] = []
     all_reference_values: list[np.ndarray] = []
     all_candidate_values: list[np.ndarray] = []
 
     for index in indices:
-        reference_page = _slice_page(reference, axis, index)
-        candidate_page = _slice_page(candidate, axis, index)
+        source_index = int(crop_starts[axis] + index)
+        reference_page = _slice_page(reference, axis, source_index, crop_zyx=crop_zyx)
+        candidate_page = _slice_page(candidate, axis, source_index, crop_zyx=crop_zyx)
         reference_stats = gaussian_intensity_stats(reference_page, ignore_zero=ignore_zero)
         candidate_stats = gaussian_intensity_stats(candidate_page, ignore_zero=ignore_zero)
         page_profiles = line_profile_metrics(
@@ -352,7 +523,7 @@ def compare_outputs(
         )
         profile_rows.extend(page_profiles)
         rows.append({
-            "i": int(index),
+            "i": source_index,
             "ncc": normalized_cross_correlation(reference_page, candidate_page),
             "ssim": global_ssim(reference_page, candidate_page),
             "cpu_fwhm": reference_stats["fwhm"],
@@ -369,15 +540,36 @@ def compare_outputs(
     ncc_values = [row["ncc"] for row in rows]
     ssim_values = [row["ssim"] for row in rows]
     summary = {
-        "shape": reference_shape,
+        "shape": comparison_shape,
+        "original_shape": reference_shape,
         "axis": axis,
         "samples": len(indices),
+        "crop": {
+            "trim_zyx": trim,
+            "zyx": [[int(start), int(stop)] for start, stop in zip(crop_starts, crop_stops)],
+        },
+        "metadata": {
+            "reference": _metadata_for_volume(
+                reference_path,
+                level=level,
+                component=reference_component,
+            ),
+            "candidate": _metadata_for_volume(
+                candidate_path,
+                level=level,
+                component=candidate_component,
+            ),
+        },
         "fwhm": {
+            "reference": reference_stats["fwhm"],
+            "candidate": candidate_stats["fwhm"],
             "cpu": reference_stats["fwhm"],
             "gpu": candidate_stats["fwhm"],
             "delta": float(candidate_stats["fwhm"] - reference_stats["fwhm"]),
         },
         "brightness": {
+            "reference_mean": reference_stats["mean"],
+            "candidate_mean": candidate_stats["mean"],
             "cpu_mean": reference_stats["mean"],
             "gpu_mean": candidate_stats["mean"],
             "delta": float(candidate_stats["mean"] - reference_stats["mean"]),
@@ -413,32 +605,70 @@ def compare_outputs(
 
 
 def _resolve_cli_comparison(args: argparse.Namespace) -> dict[str, Any]:
-    using_direct_paths = args.cpu is not None or args.gpu is not None
+    reference_path = args.reference if args.reference is not None else args.cpu
+    candidate_path = args.candidate if args.candidate is not None else args.gpu
+    if args.reference is not None and args.cpu is not None:
+        raise ValueError("Use either --reference or --cpu, not both.")
+    if args.candidate is not None and args.gpu is not None:
+        raise ValueError("Use either --candidate or --gpu, not both.")
+
+    using_direct_paths = reference_path is not None or candidate_path is not None
     using_param_files = args.cpu_params is not None or args.gpu_params is not None
     if using_direct_paths and using_param_files:
-        raise ValueError("Use either --cpu/--gpu or --cpu_params/--gpu_params, not both.")
+        raise ValueError(
+            "Use either direct paths (--reference/--candidate or --cpu/--gpu) "
+            "or --cpu_params/--gpu_params, not both."
+        )
     if using_param_files:
         if args.cpu_params is None or args.gpu_params is None:
             raise ValueError("--cpu_params and --gpu_params must be provided together.")
         return comparison_from_yaml_files(args.cpu_params, args.gpu_params)
-    if args.cpu is None or args.gpu is None:
-        raise ValueError("Provide either --cpu and --gpu, or --cpu_params and --gpu_params.")
+    if reference_path is None or candidate_path is None:
+        raise ValueError(
+            "Provide either --reference and --candidate, --cpu and --gpu, "
+            "or --cpu_params and --gpu_params."
+        )
     return {
-        "reference_path": args.cpu,
-        "candidate_path": args.gpu,
+        "reference_path": reference_path,
+        "candidate_path": candidate_path,
         "lateral_pixel_size": 1.0,
     }
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reference", type=Path, help="Reference output path")
+    parser.add_argument("--candidate", type=Path, help="Candidate output path")
     parser.add_argument("--cpu", type=Path, help="CPU output TIFF or OME-Zarr")
     parser.add_argument("--gpu", type=Path, help="GPU output TIFF or OME-Zarr")
     parser.add_argument("--cpu_params", type=Path, help="CPU workflow params YAML")
     parser.add_argument("--gpu_params", type=Path, help="GPU workflow params YAML")
     parser.add_argument("--output_json", type=Path, help="Optional path to write compact JSON")
+    parser.add_argument(
+        "--reference_component",
+        help="Optional ClearEx/Zarr component path for the reference volume",
+    )
+    parser.add_argument(
+        "--candidate_component",
+        help="Optional ClearEx/Zarr component path for the candidate volume",
+    )
+    parser.add_argument(
+        "--reference_tpc",
+        default="0,0,0",
+        help="Reference t,p,c indices for a 6-D component; default 0,0,0",
+    )
+    parser.add_argument(
+        "--candidate_tpc",
+        default="0,0,0",
+        help="Candidate t,p,c indices for a 6-D component; default 0,0,0",
+    )
     parser.add_argument("--sample_axis", type=int, default=0, help="Axis to sample pages along; default 0")
     parser.add_argument("--sample_count", type=int, default=32, help="Number of pages to sample")
+    parser.add_argument(
+        "--trim_zyx",
+        default="0,0,0",
+        help="Trim this many voxels from both low and high z,y,x edges before comparing",
+    )
     parser.add_argument("--level", default="0", help="OME-Zarr pyramid level to compare")
     parser.add_argument("--ignore_zero", action="store_true", help="Ignore zero-valued pixels in Gaussian stats")
     parser.add_argument(
@@ -459,11 +689,16 @@ def main(argv: list[str] | None = None) -> None:
         reference_path=comparison["reference_path"],
         candidate_path=comparison["candidate_path"],
         output_json=args.output_json,
+        reference_component=args.reference_component,
+        candidate_component=args.candidate_component,
+        reference_tpc=parse_tpc_indices(args.reference_tpc),
+        candidate_tpc=parse_tpc_indices(args.candidate_tpc),
         sample_axis=args.sample_axis,
         sample_count=args.sample_count,
         level=str(args.level),
         ignore_zero=bool(args.ignore_zero),
         lateral_pixel_size=lateral_pixel_size,
+        trim_zyx=parse_trim_zyx(args.trim_zyx),
     )
     print(json.dumps(_json_safe(summary), indent=2, sort_keys=True))
 

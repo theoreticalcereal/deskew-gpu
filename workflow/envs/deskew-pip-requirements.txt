@@ -1,3 +1,4 @@
+antspyx
 psfmodels
 aicsimageio
 nd2

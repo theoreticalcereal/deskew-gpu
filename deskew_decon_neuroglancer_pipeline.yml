@@ -1,0 +1,25 @@
+name: "Deskew Deconvolution Neuroglancer pipeline"
+description: "Runs deskew-gpu, deconvolution-gpu, then stages the deconvolved OME-Zarr output for Neuroglancer visualization."
+
+# Replace these dummy workflow IDs with the Astrocyte workflow IDs.
+workflow_ids:
+  - 101    # deskew-gpu
+  - 102    # deconvolution-gpu
+  - 103    # neuroglancer visualization
+
+dependencies:
+  - source_workflow: 101
+    target_workflow: 102
+    mappings:
+      - source: "Top_shear/*.ome.zarr"
+        target: "input"
+      - source: "deskew_runtime"
+        target: "decon_runtime_dir"
+
+  - source_workflow: 102
+    target_workflow: 103
+    mappings:
+      - source: "DB2_*.ome.zarr"
+        target: "inputfile"
+
+is_public: false
