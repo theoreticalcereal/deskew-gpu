@@ -43,3 +43,9 @@ size for `top_view` geometry and as the output-Z batch size for
 after deskewing. The default `16` preserves the full `1x, 2x, 4x, 8x, 16x`
 pyramid. Use `1` to write only level `0` and skip downsampled pyramid
 generation.
+
+## Output Format
+
+`output_formats` defaults to `ome_zarr`, which publishes only the native
+`Top_shear/` OME-Zarr output. Choose `tiff` to also export all deskewed
+`Top_shear` volumes as one merged BigTIFF stack in `deskewed_tiff/`.

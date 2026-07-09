@@ -40,6 +40,17 @@ workflow_parameters:
       Select ctASLM/light-sheet microscopy image files to deskew.
     regex: ".*(\\.tif|\\.tiff|\\.czi|\\.nd2|\\.lif|\\.h5|\\.hdf5|\\.ome\\.zarr|\\.TIF|\\.TIFF|\\.CZI|\\.ND2|\\.LIF|\\.H5|\\.HDF5|\\.OME\\.ZARR)$"
 
+  - id: output_formats
+    type: select
+    required: false
+    default: 'ome_zarr'
+    description: |
+      Final image output format to publish. OME-Zarr is the native workflow
+      output. Choose TIFF to also export the deskewed result as one merged TIFF stack.
+    choices:
+      - [ 'ome_zarr', 'OME-Zarr output only' ]
+      - [ 'tiff', 'OME-Zarr plus merged TIFF stack export' ]
+
   - id: pyramid_max_downsample
     type: select
     required: true
@@ -142,4 +153,3 @@ workflow_parameters:
     choices:
       - [ 'false', 'Do not export deskew runtime' ]
       - [ 'true', 'Export deskew runtime' ]
-

@@ -4,6 +4,7 @@ nextflow.enable.dsl=2
 include { BUILD_DESKEW_CONTAINER } from './modules'
 include { STAGE_DESKEW_INPUT } from './modules'
 include { DESKEW } from './modules'
+include { EXPORT_OUTPUT_FORMAT } from './modules'
 
 def inputTextFromCommandLine(commandLine) {
     if (!commandLine) {
@@ -47,6 +48,15 @@ def normalizeInputPatterns(input, commandLine = null) {
         .findAll { it }
 }
 
+def resolveInputPattern(inputPattern) {
+    def text = inputPattern.toString()
+    if (text.startsWith('/') || file(text).exists()) {
+        return text
+    }
+    def package_relative = "${projectDir}/../${text}"
+    return file(package_relative).exists() ? package_relative : text
+}
+
 def isSupplied(value) {
     if (value == null) {
         return false
@@ -80,7 +90,7 @@ workflow {
         log.info "Selected ${input_patterns.size()} input image(s): ${input_patterns.join(', ')}"
         input_files_ch = Channel
             .fromList(input_patterns)
-            .map { input_pattern -> file(input_pattern, checkIfExists: true) }
+            .map { input_pattern -> file(resolveInputPattern(input_pattern), checkIfExists: true) }
             .collect()
         STAGE_DESKEW_INPUT(input_files_ch, deskew_container_ch)
         deskew_input_ch = STAGE_DESKEW_INPUT.out.deskew_input_dir
@@ -101,4 +111,8 @@ workflow {
         params.output_dir,
         deskew_container_ch
     )
+
+    if (params.output_formats == 'tiff') {
+        EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)
+    }
 }

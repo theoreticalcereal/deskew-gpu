@@ -4,7 +4,7 @@ process BUILD_DESKEW_CONTAINER {
     cpus 2
     memory '8 GB'
     queue 'super'
-    publishDir "${params.output_dir}", mode: 'copy', pattern: 'deskew_runtime', enabled: params.export_deskew_runtime
+    publishDir "${params.output_dir}", mode: 'copy', pattern: 'deskew_runtime', enabled: params.export_deskew_runtime.toString() == 'true'
 
     output:
     path "deskew_runtime", emit: image
@@ -81,7 +81,7 @@ process STAGE_DESKEW_INPUT {
 process DESKEW {
     tag "${cell_name ?: 'deskew'}"
 
-    publishDir "${params.output_dir}", mode: 'move'
+    publishDir "${params.output_dir}", mode: 'copy'
 
     input:
     val image_path
@@ -127,5 +127,39 @@ process DESKEW {
         --deskew_prefetch ${params.deskew_prefetch} \\
         --pyramid_max_downsample ${params.pyramid_max_downsample} \\
         --deskew_output_dtype ${params.deskew_output_dtype}
+    """
+}
+
+process EXPORT_OUTPUT_FORMAT {
+    tag "${output_format}"
+
+    publishDir "${params.output_dir}", mode: 'copy'
+
+    input:
+    path deskew_outputs
+    val output_format
+    path deskew_runtime
+
+    output:
+    path "deskewed_tiff", emit: exported_output
+
+    script:
+    """
+    if [ -x "${deskew_runtime}/deskew_env/bin/python3" ] || [ -x "${deskew_runtime}/deskew_env/bin/python" ]; then
+        export CONDA_PREFIX="${deskew_runtime}/deskew_env"
+    elif [ -x "${deskew_runtime}/bin/python3" ] || [ -x "${deskew_runtime}/bin/python" ]; then
+        export CONDA_PREFIX="${deskew_runtime}"
+    else
+        echo "ERROR: no supported deskew runtime found at ${deskew_runtime}" >&2
+        exit 1
+    fi
+    export CONDA_DEFAULT_ENV=deskew_env
+    export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
+    export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
+
+    python3 ${projectDir}/scripts/export_ome_zarr_to_tiff.py \\
+        --input "${deskew_outputs}" \\
+        --output "deskewed_tiff" \\
+        --output-format "${output_format}"
     """
 }

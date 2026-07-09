@@ -1,10 +1,12 @@
 import contextlib
 import io
+import importlib.util
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import tifffile
@@ -40,6 +42,8 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("include { BUILD_DESKEW_CONTAINER } from './modules'", main_text)
         self.assertIn("include { STAGE_DESKEW_INPUT } from './modules'", main_text)
         self.assertIn("include { DESKEW } from './modules'", main_text)
+        self.assertIn("include { EXPORT_OUTPUT_FORMAT } from './modules'", main_text)
+        self.assertIn('def package_relative = "${projectDir}/../${text}"', main_text)
         self.assertNotIn("DECON", main_text)
 
     def test_modules_keep_only_deskew_processes(self):
@@ -48,18 +52,20 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("process BUILD_DESKEW_CONTAINER", modules_text)
         self.assertIn("process STAGE_DESKEW_INPUT", modules_text)
         self.assertIn("process DESKEW", modules_text)
+        self.assertIn("process EXPORT_OUTPUT_FORMAT", modules_text)
         self.assertNotIn("process DECON", modules_text)
 
     def test_deskew_publishes_terminal_output_without_copying_tree(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
 
-        self.assertIn('publishDir "${params.output_dir}", mode: \'move\'', modules_text)
+        self.assertIn('publishDir "${params.output_dir}", mode: \'copy\'', modules_text)
         self.assertIn(
             "process DESKEW {\n"
             "    tag \"${cell_name ?: 'deskew'}\"\n\n"
-            "    publishDir \"${params.output_dir}\", mode: 'move'",
+            "    publishDir \"${params.output_dir}\", mode: 'copy'",
             modules_text,
         )
+        self.assertNotIn("mode: 'move'", modules_text)
         self.assertNotIn("pattern: 'Top_shear'", modules_text)
 
     def test_config_exposes_optional_gpu_backend_not_psf_mode(self):
@@ -68,6 +74,8 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("deskew_backend = 'cpu_blocked'", config_text)
         self.assertIn("params.deskew_backend", config_text)
         self.assertIn("cuda", config_text)
+        self.assertIn("withName: EXPORT_OUTPUT_FORMAT", config_text)
+        self.assertIn("queue = 'super'", config_text)
         self.assertNotIn("psf_mode", config_text)
 
     def test_workflow_scripts_do_not_import_clearex_runtime(self):
@@ -114,6 +122,27 @@ class DeskewWiringTest(unittest.TestCase):
             ["1", "2", "4", "8", "16"],
         )
 
+    def test_output_formats_select_controls_optional_merged_tiff_export(self):
+        main_text = (ROOT / "workflow/main.nf").read_text(encoding="utf-8")
+        modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
+        config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
+        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
+        schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
+
+        self.assertIn('output_dir = "${baseDir}/output"', config_text)
+        self.assertTrue((ROOT / "workflow/output" / ".keep").exists())
+        self.assertIn("output_formats = 'ome_zarr'", config_text)
+        self.assertEqual(schema["output_formats"]["type"], "select")
+        self.assertEqual(schema["output_formats"]["default"], "ome_zarr")
+        self.assertEqual([choice[0] for choice in schema["output_formats"]["choices"]], ["ome_zarr", "tiff"])
+        self.assertIn("if (params.output_formats == 'tiff')", main_text)
+        self.assertIn("EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)", main_text)
+        self.assertIn('publishDir "${params.output_dir}", mode: \'copy\'', modules_text)
+        self.assertIn('path "deskewed_tiff", emit: exported_output', modules_text)
+        self.assertIn("--output \"deskewed_tiff\"", modules_text)
+        self.assertIn("--output-format \"${output_format}\"", modules_text)
+        self.assertNotIn("workflow.launchDir", modules_text)
+
     def test_workflow_can_reuse_prebuilt_deskew_runtime(self):
         main_text = (ROOT / "workflow/main.nf").read_text(encoding="utf-8")
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
@@ -132,9 +161,11 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("export_deskew_runtime = false", config_text)
         self.assertIn("params.export_deskew_runtime", modules_text)
         self.assertIn('publishDir "${params.output_dir}", mode: \'copy\', pattern: \'deskew_runtime\'', modules_text)
+        self.assertIn("enabled: params.export_deskew_runtime.toString() == 'true'", modules_text)
         self.assertIn("export_deskew_runtime", schema)
-        self.assertEqual(schema["export_deskew_runtime"]["type"], "boolean")
-        self.assertFalse(schema["export_deskew_runtime"]["default"])
+        self.assertEqual(schema["export_deskew_runtime"]["type"], "select")
+        self.assertEqual(schema["export_deskew_runtime"]["default"], "false")
+        self.assertEqual([choice[0] for choice in schema["export_deskew_runtime"]["choices"]], ["false", "true"])
 
     def test_pipeline_maps_exported_runtime_to_deconvolution_runtime_parameter(self):
         pipeline = yaml.safe_load((ROOT / "deskew_decon_neuroglancer_pipeline.yml").read_text(encoding="utf-8"))
@@ -477,6 +508,62 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("cudadecon=0.7.0", conda_text)
         self.assertIn("pycudadecon=0.5.1", conda_text)
         self.assertIn("psfmodels", pip_text)
+
+
+def load_export_module():
+    script_path = SCRIPTS / "export_ome_zarr_to_tiff.py"
+    spec = importlib.util.spec_from_file_location("export_ome_zarr_to_tiff", script_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class ExportDeskewOmeZarrToTiffTest(unittest.TestCase):
+    def setUp(self):
+        self.module = load_export_module()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_export_directory_writes_one_merged_tiff_for_all_top_shear_zarrs(self):
+        input_dir = self.root / "Top_shear"
+        output_dir = self.root / "deskewed_tiff"
+        (input_dir / "b_sample.ome.zarr").mkdir(parents=True)
+        (input_dir / "a_sample.ome.zarr").mkdir(parents=True)
+        written = []
+
+        volumes = {
+            "a_sample.ome.zarr": np.full((2, 3, 4), 1, dtype=np.uint16),
+            "b_sample.ome.zarr": np.full((1, 3, 4), 2, dtype=np.uint16),
+        }
+
+        def fake_open(path, mode="r"):
+            return volumes[Path(path).name]
+
+        with mock.patch.object(self.module, "open_ome_zarr_array", side_effect=fake_open), \
+                mock.patch.object(
+                    self.module.tifffile,
+                    "imwrite",
+                    side_effect=lambda path, array, **kwargs: written.append((Path(path), array, kwargs)),
+                ):
+            output = self.module.export_directory(input_dir, output_dir)
+
+        self.assertEqual(output, output_dir / "deskewed_merged.tif")
+        self.assertEqual(written[0][0], output_dir / "deskewed_merged.tif")
+        self.assertEqual(written[0][1].shape, (3, 3, 4))
+        np.testing.assert_array_equal(written[0][1][:2], volumes["a_sample.ome.zarr"])
+        np.testing.assert_array_equal(written[0][1][2:], volumes["b_sample.ome.zarr"])
+        self.assertTrue(written[0][2]["bigtiff"])
+
+    def test_export_directory_rejects_unsupported_format(self):
+        input_dir = self.root / "Top_shear"
+        input_dir.mkdir()
+
+        with self.assertRaisesRegex(ValueError, "Unsupported output format"):
+            self.module.export_directory(input_dir, self.root / "out", output_format="czi")
 
 
 if __name__ == "__main__":
