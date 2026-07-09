@@ -36,20 +36,24 @@ workflow_parameters:
     type: files
     required: true
     min: 1
-    description: Select image files to deskew.
+    description: |
+      Select ctASLM/light-sheet microscopy image files to deskew.
     regex: ".*(\\.tif|\\.tiff|\\.czi|\\.nd2|\\.lif|\\.h5|\\.hdf5|\\.ome\\.zarr|\\.TIF|\\.TIFF|\\.CZI|\\.ND2|\\.LIF|\\.H5|\\.HDF5|\\.OME\\.ZARR)$"
-  
+
   - id: pyramid_max_downsample
     type: select
-    required: false
+    required: true
     default: '16'
-    description: Largest XY OME-Zarr pyramid downsample factor to write.
+    description: |
+      Maximum XY downsampling level for OME-Zarr multiscale pyramid output.
+      Level 0 is full resolution; higher levels downsample rows and columns by
+      the selected factor while preserving Z resolution.
     choices:
       - [ '1', 'Full resolution only' ]
-      - [ '2', 'Up to 2x' ]
-      - [ '4', 'Up to 4x' ]
-      - [ '8', 'Up to 8x' ]
-      - [ '16', 'Up to 16x' ]
+      - [ '2', 'Build 2x pyramid level' ]
+      - [ '4', 'Build up to 4x pyramid levels' ]
+      - [ '8', 'Build up to 8x pyramid levels' ]
+      - [ '16', 'Build up to 16x pyramid levels' ]
 
   - id: dx
     type: real
@@ -97,7 +101,9 @@ workflow_parameters:
     type: select
     required: false
     default: 'uint16'
-    description: Deskew output dtype. Use float32 with ClearEx affine geometry to match ClearEx interpolation output.
+    description: |
+      Deskew output dtype. Use float32 with ClearEx affine geometry to match
+      ClearEx interpolation output.
     choices:
       - [ 'uint16', 'uint16' ]
       - [ 'float32', 'float32' ]
@@ -119,11 +125,17 @@ workflow_parameters:
   - id: deskew_runtime_dir
     type: string
     required: false
-    default: ''
-    description: Optional prebuilt runtime path; leave empty to build the workflow runtime.
+    default: '-1'
+    description: |
+      Optional existing runtime directory to reuse instead of building a new
+      conda environment. This can point to a deconvolution runtime, a deskew
+      runtime, or directly to the conda environment directory. Use -1 to build
+      the default deskew runtime.
 
   - id: export_deskew_runtime
     type: boolean
     required: false
     default: false
-    description: Copy the built deskew runtime into the output directory so downstream deconvolution can reuse it.
+    description: |
+      Copy the built deskew runtime into the output directory so downstream
+      deconvolution can reuse it.
