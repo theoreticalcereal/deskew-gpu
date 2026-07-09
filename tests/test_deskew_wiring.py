@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 import numpy as np
 import tifffile
@@ -130,18 +131,30 @@ class DeskewWiringTest(unittest.TestCase):
         schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
 
         self.assertIn('output_dir = "${baseDir}/output"', config_text)
+        self.assertIn("cleanup = true", config_text)
         self.assertTrue((ROOT / "workflow/output" / ".keep").exists())
         self.assertIn("output_formats = 'ome_zarr'", config_text)
         self.assertEqual(schema["output_formats"]["type"], "select")
         self.assertEqual(schema["output_formats"]["default"], "ome_zarr")
-        self.assertEqual([choice[0] for choice in schema["output_formats"]["choices"]], ["ome_zarr", "tiff"])
-        self.assertIn("if (params.output_formats == 'tiff')", main_text)
+        self.assertEqual([choice[0] for choice in schema["output_formats"]["choices"]], ["ome_zarr", "ozx", "tiff"])
+        self.assertIn("if (params.output_formats != 'ome_zarr')", main_text)
         self.assertIn("EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)", main_text)
-        self.assertIn('publishDir "${params.output_dir}", mode: \'copy\'', modules_text)
-        self.assertIn('path "deskewed_tiff", emit: exported_output', modules_text)
+        self.assertIn("enabled: params.output_formats != 'ozx'", modules_text)
+        self.assertIn('path "deskewed_tiff", optional: true, emit: exported_output', modules_text)
+        self.assertIn('path "deskewed_ozx", optional: true, emit: exported_ozx', modules_text)
         self.assertIn("--output \"deskewed_tiff\"", modules_text)
         self.assertIn("--output-format \"${output_format}\"", modules_text)
         self.assertNotIn("workflow.launchDir", modules_text)
+
+    def test_ozx_is_supported_as_file_based_ome_zarr_transport(self):
+        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
+        schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
+        modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
+
+        self.assertIn("\\.ozx", schema["input"]["regex"])
+        self.assertIn("\\.OZX", schema["input"]["regex"])
+        self.assertIn("deskewed_ozx", modules_text)
+        self.assertIn("output_dir=deskewed_ozx", modules_text)
 
     def test_workflow_can_reuse_prebuilt_deskew_runtime(self):
         main_text = (ROOT / "workflow/main.nf").read_text(encoding="utf-8")
@@ -519,6 +532,15 @@ def load_export_module():
     return module
 
 
+def load_normalize_module():
+    script_path = SCRIPTS / "normalize_input_to_ome_zarr.py"
+    spec = importlib.util.spec_from_file_location("normalize_input_to_ome_zarr", script_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class ExportDeskewOmeZarrToTiffTest(unittest.TestCase):
     def setUp(self):
         self.module = load_export_module()
@@ -564,6 +586,48 @@ class ExportDeskewOmeZarrToTiffTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Unsupported output format"):
             self.module.export_directory(input_dir, self.root / "out", output_format="czi")
+
+    def test_export_directory_writes_one_ozx_archive_per_ome_zarr(self):
+        input_dir = self.root / "Top_shear"
+        output_dir = self.root / "deskewed_ozx"
+        zarr_dir = input_dir / "sample.ome.zarr"
+        (zarr_dir / "0").mkdir(parents=True)
+        (zarr_dir / ".zgroup").write_text("{}\n", encoding="utf-8")
+        (zarr_dir / "0" / ".zarray").write_text("{}\n", encoding="utf-8")
+
+        outputs = self.module.export_directory(input_dir, output_dir, output_format="ozx")
+
+        self.assertEqual(outputs, [output_dir / "sample.ozx"])
+        with zipfile.ZipFile(output_dir / "sample.ozx") as archive:
+            self.assertEqual(
+                sorted(archive.namelist()),
+                ["sample.ome.zarr/.zgroup", "sample.ome.zarr/0/.zarray"],
+            )
+
+
+class NormalizeOzxInputTest(unittest.TestCase):
+    def setUp(self):
+        self.module = load_normalize_module()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_normalize_directory_unpacks_ozx_file_as_ome_zarr_input(self):
+        input_dir = self.root / "input"
+        input_dir.mkdir()
+        archive_path = input_dir / "sample.ozx"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("sample.ome.zarr/.zgroup", "{}\n")
+            archive.writestr("sample.ome.zarr/.zattrs", "{}\n")
+            archive.writestr("sample.ome.zarr/0/.zarray", "{}\n")
+
+        outputs = self.module.normalize_directory(input_dir, self.root / "output")
+
+        self.assertEqual(outputs, [self.root / "output" / "sample.ome.zarr"])
+        self.assertTrue((self.root / "output" / "sample.ome.zarr" / ".zgroup").exists())
+        self.assertTrue((self.root / "output" / "sample.ome.zarr" / "0" / ".zarray").exists())
 
 
 if __name__ == "__main__":

@@ -47,5 +47,8 @@ generation.
 ## Output Format
 
 `output_formats` defaults to `ome_zarr`, which publishes only the native
-`Top_shear/` OME-Zarr output. Choose `tiff` to also export all deskewed
-`Top_shear` volumes as one merged BigTIFF stack in `deskewed_tiff/`.
+`Top_shear/` OME-Zarr folder output. Choose `ozx` to publish zipped OME-Zarr
+archives in `deskewed_ozx/` instead of publishing `Top_shear/`; this is useful
+when a file-based workflow system cannot stage or export OME-Zarr directories.
+Choose `tiff` to publish `Top_shear/` and also export all deskewed volumes as
+one merged BigTIFF stack in `deskewed_tiff/`.

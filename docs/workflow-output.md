@@ -19,6 +19,15 @@ workflow/output/
     `-- deskewed_merged.tif
 ```
 
+When `output_formats = ozx`, the workflow does not publish `Top_shear/`.
+Instead it writes one zipped OME-Zarr archive per deskewed OME-Zarr volume:
+
+```text
+workflow/output/
+`-- deskewed_ozx/
+    `-- <sample>.ozx
+```
+
 `Top_shear/` is the handoff directory for the separate `deconvolution-gpu`
 workflow.
 
@@ -35,3 +44,8 @@ default `16x` level.
 The optional `deskewed_merged.tif` is a single BigTIFF stack made by reading
 the deskewed `Top_shear` volumes in sorted filename order and concatenating
 them along Z.
+
+Successful runs clean the Nextflow `work/` directory automatically after final
+outputs are published. This keeps the published OME-Zarr, OZX, or optional TIFF
+outputs, but removes intermediate normalized Zarrs and task-local copies. As a
+result, completed runs cannot be resumed from the cleaned task cache.

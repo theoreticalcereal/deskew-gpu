@@ -7,6 +7,8 @@ import argparse
 from pathlib import Path
 import shutil
 import sys
+import tempfile
+import zipfile
 
 from ome_zarr_io import image_stem, is_ome_zarr_path, log_progress, write_ome_zarr_array
 
@@ -16,7 +18,8 @@ CZI_SUFFIXES = {".czi"}
 ND2_SUFFIXES = {".nd2"}
 LIF_SUFFIXES = {".lif"}
 HDF5_SUFFIXES = {".h5", ".hdf5"}
-SUPPORTED_FILE_SUFFIXES = TIFF_SUFFIXES | CZI_SUFFIXES | ND2_SUFFIXES | LIF_SUFFIXES | HDF5_SUFFIXES
+OZX_SUFFIXES = {".ozx"}
+SUPPORTED_FILE_SUFFIXES = TIFF_SUFFIXES | CZI_SUFFIXES | ND2_SUFFIXES | LIF_SUFFIXES | HDF5_SUFFIXES | OZX_SUFFIXES
 
 
 def _require_numpy():
@@ -152,6 +155,50 @@ LOADERS_BY_SUFFIX = {
 }
 
 
+def _safe_extract_zip(archive_path: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    destination_root = destination.resolve()
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.infolist():
+            member_name = member.filename
+            if not member_name:
+                continue
+            target = destination / member_name
+            try:
+                target.resolve().relative_to(destination_root)
+            except ValueError as exc:
+                raise ValueError(f"Unsafe path in OZX archive {archive_path}: {member_name}") from exc
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, target.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+
+
+def unpack_ozx_archive(path: Path, output_dir: Path) -> Path:
+    log_progress(f"Unpacking OZX OME-Zarr input: {path.name}")
+    with tempfile.TemporaryDirectory(prefix=f"{path.stem}_ozx_", dir=output_dir.parent) as tmpdir:
+        tmp_root = Path(tmpdir)
+        _safe_extract_zip(path, tmp_root)
+        zarr_candidates = sorted(
+            candidate
+            for candidate in tmp_root.rglob("*")
+            if candidate.is_dir() and is_ome_zarr_path(candidate)
+        )
+        if len(zarr_candidates) != 1:
+            raise ValueError(
+                f"OZX archive {path} must contain exactly one .ome.zarr directory; "
+                f"found {len(zarr_candidates)}"
+            )
+        output_path = output_dir / zarr_candidates[0].name
+        if output_path.exists():
+            shutil.rmtree(output_path)
+        shutil.move(str(zarr_candidates[0]), output_path)
+    log_progress(f"Finished {output_path.name}")
+    return output_path
+
+
 def supported_input_paths(input_dir: Path) -> list[Path]:
     paths = []
     for path in sorted(input_dir.iterdir(), key=lambda item: item.name):
@@ -171,6 +218,8 @@ def normalize_one(path: Path, output_dir: Path) -> Path:
         shutil.copytree(path, output_path)
         log_progress(f"Finished {output_path.name}")
         return output_path
+    if path.is_file() and path.suffix.lower() in OZX_SUFFIXES:
+        return unpack_ozx_archive(path, output_dir)
 
     loader = LOADERS_BY_SUFFIX.get(path.suffix.lower())
     if loader is None:

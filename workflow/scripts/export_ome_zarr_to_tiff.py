@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Export deskewed OME-Zarr outputs to one merged TIFF stack."""
+"""Export deskewed OME-Zarr outputs to selected transport formats."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import zipfile
 
 import numpy as np
 import tifffile
 
-from ome_zarr_io import TIFF_SUFFIXES, is_ome_zarr_path, log_progress, open_ome_zarr_array
+from ome_zarr_io import TIFF_SUFFIXES, image_stem, is_ome_zarr_path, log_progress, open_ome_zarr_array
 
 
-SUPPORTED_OUTPUT_FORMATS = {"tiff"}
+SUPPORTED_OUTPUT_FORMATS = {"tiff", "ozx"}
 
 
 def _ensure_3d(volume, source: Path):
@@ -57,10 +58,33 @@ def _merge_volumes(paths: list[Path]):
     return np.concatenate(arrays, axis=0)
 
 
-def export_directory(input_dir: Path | str, output_dir: Path | str, output_format: str = "tiff") -> Path:
+def _write_ozx_archive(path: Path, output_root: Path) -> Path:
+    destination = output_root / f"{image_stem(path)}.ozx"
+    log_progress(f"Writing zipped OME-Zarr archive: {destination}")
+    if destination.exists():
+        destination.unlink()
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+        for item in sorted(path.rglob("*")):
+            if item.is_file():
+                archive.write(item, Path(path.name) / item.relative_to(path))
+    return destination
+
+
+def _export_ozx_archives(paths: list[Path], output_root: Path) -> list[Path]:
+    zarr_paths = [path for path in paths if path.is_dir() and is_ome_zarr_path(path)]
+    if len(zarr_paths) != len(paths):
+        unsupported = [path.name for path in paths if path not in zarr_paths]
+        raise ValueError(f"OZX export only supports OME-Zarr directories, got: {unsupported}")
+    return [_write_ozx_archive(path, output_root) for path in zarr_paths]
+
+
+def export_directory(input_dir: Path | str, output_dir: Path | str, output_format: str = "tiff") -> Path | list[Path]:
     normalized_format = str(output_format).lower()
     if normalized_format not in SUPPORTED_OUTPUT_FORMATS:
-        raise ValueError(f"Unsupported output format: {output_format}. Supported export formats: tiff")
+        raise ValueError(
+            f"Unsupported output format: {output_format}. "
+            f"Supported export formats: {', '.join(sorted(SUPPORTED_OUTPUT_FORMATS))}"
+        )
 
     outputs = discover_deskew_outputs(input_dir)
     if not outputs:
@@ -68,6 +92,9 @@ def export_directory(input_dir: Path | str, output_dir: Path | str, output_forma
 
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
+    if normalized_format == "ozx":
+        return _export_ozx_archives(outputs, output_root)
+
     destination = output_root / "deskewed_merged.tif"
     merged = _merge_volumes(outputs)
     log_progress(f"Writing merged deskew TIFF stack: {destination}")
@@ -76,10 +103,10 @@ def export_directory(input_dir: Path | str, output_dir: Path | str, output_forma
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Export deskewed OME-Zarr outputs to one merged TIFF stack.")
+    parser = argparse.ArgumentParser(description="Export deskewed OME-Zarr outputs to TIFF or OZX.")
     parser.add_argument("--input", required=True, help="Directory containing deskewed Top_shear outputs.")
-    parser.add_argument("--output", required=True, help="Directory where the merged TIFF stack should be written.")
-    parser.add_argument("--output-format", default="tiff", help="Requested output format. Currently supports tiff.")
+    parser.add_argument("--output", required=True, help="Directory where exported output should be written.")
+    parser.add_argument("--output-format", default="tiff", help="Requested output format. Supports tiff and ozx.")
     return parser.parse_args(argv)
 
 
