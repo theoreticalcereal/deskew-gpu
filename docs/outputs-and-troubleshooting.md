@@ -20,7 +20,7 @@ installed by this package.
 The runtime also includes the deconvolution dependencies so it can be reused by
 `deconvolution-gpu` when `decon_runtime_dir` points at the built deskew runtime.
 Set `export_deskew_runtime = true` to publish `deskew_runtime/` alongside
-`Top_shear/` for an Astrocyte pipeline dependency. Leave it `false` for
+`deskewed_ozx/` for an Astrocyte pipeline dependency. Leave it `false` for
 standalone deskew runs to avoid copying the large conda environment.
 
 ## CPU/GPU Output Comparison

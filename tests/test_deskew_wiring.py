@@ -123,7 +123,7 @@ class DeskewWiringTest(unittest.TestCase):
             ["1", "2", "4", "8", "16"],
         )
 
-    def test_output_formats_select_controls_optional_merged_tiff_export(self):
+    def test_output_formats_select_controls_ozx_and_optional_merged_tiff_export(self):
         main_text = (ROOT / "workflow/main.nf").read_text(encoding="utf-8")
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
@@ -133,16 +133,21 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn('output_dir = "${baseDir}/output"', config_text)
         self.assertIn("cleanup = true", config_text)
         self.assertTrue((ROOT / "workflow/output" / ".keep").exists())
-        self.assertIn("output_formats = 'ome_zarr'", config_text)
+        self.assertIn("output_formats = 'ozx'", config_text)
         self.assertEqual(schema["output_formats"]["type"], "select")
-        self.assertEqual(schema["output_formats"]["default"], "ome_zarr")
-        self.assertEqual([choice[0] for choice in schema["output_formats"]["choices"]], ["ome_zarr", "ozx", "tiff"])
-        self.assertIn("if (params.output_formats != 'ome_zarr')", main_text)
+        self.assertEqual(schema["output_formats"]["default"], "ozx")
+        self.assertEqual([choice[0] for choice in schema["output_formats"]["choices"]], ["ozx", "tiff"])
+        self.assertNotIn("'ome_zarr'", main_text)
+        self.assertNotIn("'ome_zarr'", config_text)
+        self.assertNotIn("'ome_zarr'", modules_text)
         self.assertIn("EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)", main_text)
-        self.assertIn("enabled: params.output_formats != 'ozx'", modules_text)
+        self.assertNotIn("if (params.output_formats", main_text)
+        self.assertIn("enabled: false", modules_text)
         self.assertIn('path "deskewed_tiff", optional: true, emit: exported_output', modules_text)
         self.assertIn('path "deskewed_ozx", optional: true, emit: exported_ozx', modules_text)
         self.assertIn("--output \"deskewed_tiff\"", modules_text)
+        self.assertIn("output_dir=deskewed_ozx", modules_text)
+        self.assertIn('--output-format "ozx"', modules_text)
         self.assertIn("--output-format \"${output_format}\"", modules_text)
         self.assertNotIn("workflow.launchDir", modules_text)
 

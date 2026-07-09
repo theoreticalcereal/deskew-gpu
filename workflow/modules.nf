@@ -81,7 +81,7 @@ process STAGE_DESKEW_INPUT {
 process DESKEW {
     tag "${cell_name ?: 'deskew'}"
 
-    publishDir "${params.output_dir}", mode: 'copy', enabled: params.output_formats != 'ozx'
+    publishDir "${params.output_dir}", mode: 'copy', enabled: false
 
     input:
     val image_path
@@ -158,17 +158,19 @@ process EXPORT_OUTPUT_FORMAT {
     export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
     export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
 
+    output_dir=deskewed_ozx
+    python3 ${projectDir}/scripts/export_ome_zarr_to_tiff.py \\
+        --input "${deskew_outputs}" \\
+        --output "\${output_dir}" \\
+        --output-format "ozx"
+
     if [ "${output_format}" = "tiff" ]; then
         python3 ${projectDir}/scripts/export_ome_zarr_to_tiff.py \\
             --input "${deskew_outputs}" \\
             --output "deskewed_tiff" \\
             --output-format "${output_format}"
     elif [ "${output_format}" = "ozx" ]; then
-        output_dir=deskewed_ozx
-        python3 ${projectDir}/scripts/export_ome_zarr_to_tiff.py \\
-            --input "${deskew_outputs}" \\
-            --output "\${output_dir}" \\
-            --output-format "${output_format}"
+        true
     else
         echo "ERROR: unsupported output format: ${output_format}" >&2
         exit 1

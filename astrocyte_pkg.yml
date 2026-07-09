@@ -43,15 +43,14 @@ workflow_parameters:
   - id: output_formats
     type: select
     required: false
-    default: 'ome_zarr'
+    default: 'ozx'
     description: |
-      Final image output format to publish. OME-Zarr is the native workflow
-      output. Choose OZX to publish zipped OME-Zarr archives instead of OME-Zarr
-      folders. Choose TIFF to also export the deskewed result as one merged TIFF stack.
+      Final image output format to publish. OZX is a zipped OME-Zarr archive
+      that Astrocyte can stage and export as a file. Choose TIFF to publish
+      OZX plus one merged TIFF stack.
     choices:
-      - [ 'ome_zarr', 'OME-Zarr output only' ]
       - [ 'ozx', 'Zipped OME-Zarr archive output' ]
-      - [ 'tiff', 'OME-Zarr plus merged TIFF stack export' ]
+      - [ 'tiff', 'OZX plus merged TIFF stack export' ]
 
   - id: pyramid_max_downsample
     type: select

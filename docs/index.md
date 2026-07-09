@@ -6,7 +6,7 @@ run deconvolution and does not launch visualization.
 ## Workflow
 
 ```text
-selected images -> STAGE_DESKEW_INPUT -> DESKEW -> Top_shear/
+selected images -> STAGE_DESKEW_INPUT -> DESKEW -> deskewed_ozx/
 ```
 
 Use `deconvolution-gpu` after this workflow when blind PSF estimation and GPU

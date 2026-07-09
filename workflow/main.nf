@@ -112,7 +112,5 @@ workflow {
         deskew_container_ch
     )
 
-    if (params.output_formats != 'ome_zarr') {
-        EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)
-    }
+    EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)
 }

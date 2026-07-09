@@ -46,9 +46,8 @@ generation.
 
 ## Output Format
 
-`output_formats` defaults to `ome_zarr`, which publishes only the native
-`Top_shear/` OME-Zarr folder output. Choose `ozx` to publish zipped OME-Zarr
-archives in `deskewed_ozx/` instead of publishing `Top_shear/`; this is useful
-when a file-based workflow system cannot stage or export OME-Zarr directories.
-Choose `tiff` to publish `Top_shear/` and also export all deskewed volumes as
-one merged BigTIFF stack in `deskewed_tiff/`.
+`output_formats` defaults to `ozx`, which publishes zipped OME-Zarr archives in
+`deskewed_ozx/`. Folder-form OME-Zarr output is no longer a published option
+because Astrocyte stages and exports files more reliably than directories.
+Choose `tiff` to publish the same `deskewed_ozx/` archives and also export all
+deskewed volumes as one merged BigTIFF stack in `deskewed_tiff/`.
