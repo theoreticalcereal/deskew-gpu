@@ -133,9 +133,13 @@ workflow_parameters:
       the default deskew runtime.
 
   - id: export_deskew_runtime
-    type: boolean
+    type: select
     required: false
-    default: false
+    default: 'false'
     description: |
       Copy the built deskew runtime into the output directory so downstream
       deconvolution can reuse it.
+    choices:
+      - [ 'false', 'Do not export deskew runtime' ]
+      - [ 'true', 'Export deskew runtime' ]
+
