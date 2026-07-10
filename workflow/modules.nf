@@ -38,7 +38,7 @@ process STAGE_DESKEW_INPUT {
 
 process DESKEW {
     tag "${cell_name ?: 'deskew'}"
-    module 'singularity/3.9.9:cuda/11.8.0'
+    module 'singularity/3.9.9'
     container DESKEW_CONTAINER_IMAGE
     containerOptions = { ['gpu', 'cuda'].contains((params.deskew_backend ?: '').toString().trim().toLowerCase().replace('-', '_')) ? '--nv' : '' }
 

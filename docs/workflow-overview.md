@@ -11,8 +11,9 @@ EXPORT_OUTPUT_FORMAT
 
 All processes run in the BioHPC GitLab container
 `git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
-GPU deskew loads `cuda/11.8.0` and passes Singularity `--nv` for GPU backend
-runs.
+GPU deskew passes Singularity `--nv` for GPU backend runs. The host NVIDIA
+driver is exposed by Singularity, and CUDA user-space libraries are provided by
+the container image.
 
 `STAGE_DESKEW_INPUT` normalizes selected image files to OME-Zarr and preserves
 original filenames in `original_filenames.tsv`. `DESKEW` reads those normalized

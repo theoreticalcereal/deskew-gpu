@@ -33,8 +33,8 @@ requested.
 
 The workflow always runs inside
 `git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
-BioHPC staging loads `singularity/3.9.9` and `cuda/11.8.0`; GPU backend runs
-pass Singularity `--nv`.
+BioHPC staging loads `singularity/3.9.9`; GPU backend runs pass Singularity
+`--nv`. CUDA user-space libraries are supplied by the container image.
 
 `deskew_backend` defaults to `cpu_blocked`. Use `gpu` or `cuda` to run the
 Numba CUDA backend and request one Slurm GPU. CPU runs always compute and write

@@ -29,7 +29,6 @@ documentation_files:
 
 workflow_modules:
   - 'singularity/3.9.9'
-  - 'cuda/11.8.0'
 
 workflow_containers:
   - docker://git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0

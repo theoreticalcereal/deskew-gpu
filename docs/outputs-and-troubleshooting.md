@@ -15,9 +15,9 @@ GPU and should be used when CUDA is unavailable.
 
 The workflow runs in
 `git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
-BioHPC staging loads `singularity/3.9.9` and `cuda/11.8.0`, and the BioHPC
-workflow passes Singularity `--nv` for GPU backend runs so GPU jobs can see the
-host CUDA driver.
+BioHPC staging loads `singularity/3.9.9`, and the BioHPC workflow passes
+Singularity `--nv` for GPU backend runs so GPU jobs can see the host NVIDIA
+driver. CUDA user-space libraries are supplied by the container image.
 Visualization dependencies are handled by a separate package.
 
 ## CPU/GPU Output Comparison

@@ -4,6 +4,7 @@ COPY environment.yml /tmp/environment.yml
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        libgomp1 \
         libice6 \
         libsm6 \
         libx11-6 \

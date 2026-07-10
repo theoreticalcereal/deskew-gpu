@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "workflow" / "scripts"
 DESKEW_CONTAINER_IMAGE = "git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0"
 ASTROCYTE_CONTAINER_IMAGE = f"docker://{DESKEW_CONTAINER_IMAGE}"
-CUDA_MODULE = "cuda/11.8.0"
 CONTAINER_ENV_PREFIX = "/opt/conda/envs/app"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -71,8 +70,9 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertNotIn("neuroglancer-stage", modules_text)
         self.assertNotIn("neuroglancer-stage", package_text)
         self.assertEqual(modules_text.count("container DESKEW_CONTAINER_IMAGE"), 3)
-        self.assertIn(CUDA_MODULE, package_text)
-        self.assertIn(f"module 'singularity/3.9.9:{CUDA_MODULE}'", modules_text)
+        self.assertNotIn("cuda/11.8.0", package_text)
+        self.assertNotIn("module 'singularity/3.9.9:cuda/11.8.0'", modules_text)
+        self.assertIn("module 'singularity/3.9.9'", modules_text)
         self.assertIn("containerOptions = { ['gpu', 'cuda'].contains", modules_text)
         self.assertIn("? '--nv' : ''", modules_text)
         self.assertNotIn("deskew_runtime", modules_text)

@@ -11,8 +11,9 @@ estimation and GPU deconvolution are needed.
 
 All workflow processes run in the BioHPC GitLab container
 `git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
-GPU deskew also loads the BioHPC `cuda/11.8.0` module and passes Singularity
-`--nv` for GPU backend runs so the container can access the host GPU stack.
+GPU deskew passes Singularity `--nv` for GPU backend runs so the container can
+access the host NVIDIA driver while CUDA user-space libraries come from the
+container environment.
 
 1. `STAGE_DESKEW_INPUT` links selected files, preserves original filenames, and
    normalizes supported images to `input_zarr/*.ome.zarr`.
