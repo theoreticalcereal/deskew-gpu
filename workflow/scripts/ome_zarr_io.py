@@ -51,6 +51,15 @@ def discover_image_volumes(input_dir: Path | str) -> list[Path]:
     return sorted(paths, key=lambda path: path.name)
 
 
+def default_ome_zarr_compressor():
+    try:
+        from numcodecs import Blosc
+    except ImportError as exc:
+        raise RuntimeError("Missing required dependency 'numcodecs' for OME-Zarr compression") from exc
+
+    return Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
+
+
 def pyramid_downsample_factors(
     *,
     max_downsample: int = 16,
@@ -250,7 +259,7 @@ def create_ome_zarr_array(
         shape=tuple(int(axis) for axis in shape),
         chunks=tuple(int(axis) for axis in chunks),
         dtype=dtype,
-        compressor=None,
+        compressor=default_ome_zarr_compressor(),
     )
 
 
@@ -298,7 +307,7 @@ def write_downsampled_pyramid(
             shape=shape,
             chunks=chunks,
             dtype=dtype,
-            compressor=None,
+            compressor=default_ome_zarr_compressor(),
         )
         level_start = time.perf_counter()
         last_progress = level_start

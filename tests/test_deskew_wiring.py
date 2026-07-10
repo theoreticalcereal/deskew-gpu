@@ -411,6 +411,59 @@ class DeskewWiringTest(unittest.TestCase):
             [[1, 1, 1], [1, 2, 2], [1, 4, 4]],
         )
 
+    def test_ome_zarr_writer_compresses_uint16_and_float32_losslessly(self):
+        from numcodecs import Blosc
+
+        volumes = [
+            np.arange(2 * 4 * 5, dtype=np.uint16).reshape(2, 4, 5),
+            np.linspace(-1.5, 2.5, 2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for volume in volumes:
+                output = Path(tmpdir) / f"sample_{volume.dtype}.ome.zarr"
+                zarr_array = create_ome_zarr_array(
+                    output,
+                    shape=volume.shape,
+                    chunks=(1, 2, 5),
+                    dtype=volume.dtype,
+                    max_downsample=1,
+                )
+                zarr_array[:] = volume
+
+                reopened = open_ome_zarr_array(output)
+
+                self.assertIsNotNone(reopened.compressor)
+                self.assertEqual(reopened.compressor.cname, "zstd")
+                self.assertEqual(reopened.compressor.shuffle, Blosc.BITSHUFFLE)
+                np.testing.assert_array_equal(reopened[:], volume)
+
+    def test_pyramid_levels_use_lossless_zarr_compression(self):
+        import zarr
+        from numcodecs import Blosc
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "sample.ome.zarr"
+            base = np.arange(4 * 6 * 8, dtype=np.uint16).reshape(4, 6, 8)
+            zarr_array = create_ome_zarr_array(
+                output,
+                shape=base.shape,
+                chunks=(2, 3, 4),
+                dtype=base.dtype,
+                max_downsample=2,
+            )
+            zarr_array[:] = base
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                write_downsampled_pyramid(output, max_downsample=2)
+
+            level1 = zarr.open(str(output / "1"), mode="r")
+
+            self.assertIsNotNone(level1.compressor)
+            self.assertEqual(level1.compressor.cname, "zstd")
+            self.assertEqual(level1.compressor.shuffle, Blosc.BITSHUFFLE)
+            np.testing.assert_array_equal(level1[:], base[:, ::2, ::2])
+
     def test_pyramid_writer_logs_level_completion(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "sample.ome.zarr"
