@@ -16,6 +16,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "workflow" / "scripts"
+DESKEW_CONTAINER_IMAGE = "git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0"
+ASTROCYTE_CONTAINER_IMAGE = f"docker://{DESKEW_CONTAINER_IMAGE}"
+CUDA_MODULE = "cuda/11.8.0"
+CONTAINER_ENV_PREFIX = "/opt/conda/envs/app"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -40,21 +44,43 @@ class DeskewWiringTest(unittest.TestCase):
     def test_main_wires_deskew_without_deconvolution(self):
         main_text = (ROOT / "workflow/main.nf").read_text(encoding="utf-8")
 
-        self.assertIn("include { BUILD_DESKEW_CONTAINER } from './modules'", main_text)
         self.assertIn("include { STAGE_DESKEW_INPUT } from './modules'", main_text)
         self.assertIn("include { DESKEW } from './modules'", main_text)
         self.assertIn("include { EXPORT_OUTPUT_FORMAT } from './modules'", main_text)
         self.assertIn('def package_relative = "${projectDir}/../${text}"', main_text)
+        self.assertNotIn("BUILD_DESKEW_CONTAINER", main_text)
+        self.assertNotIn("deskew_container_ch", main_text)
         self.assertNotIn("DECON", main_text)
 
     def test_modules_keep_only_deskew_processes(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
 
-        self.assertIn("process BUILD_DESKEW_CONTAINER", modules_text)
         self.assertIn("process STAGE_DESKEW_INPUT", modules_text)
         self.assertIn("process DESKEW", modules_text)
         self.assertIn("process EXPORT_OUTPUT_FORMAT", modules_text)
+        self.assertNotIn("process BUILD_DESKEW_CONTAINER", modules_text)
         self.assertNotIn("process DECON", modules_text)
+
+    def test_workflow_uses_fixed_container_runtime(self):
+        modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
+        package_text = (ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8")
+        package = yaml.safe_load(package_text)
+
+        self.assertIn(DESKEW_CONTAINER_IMAGE, modules_text)
+        self.assertIn(ASTROCYTE_CONTAINER_IMAGE, package["workflow_containers"])
+        self.assertNotIn("neuroglancer-stage", modules_text)
+        self.assertNotIn("neuroglancer-stage", package_text)
+        self.assertEqual(modules_text.count("container DESKEW_CONTAINER_IMAGE"), 3)
+        self.assertIn(CUDA_MODULE, package_text)
+        self.assertIn(f"module 'singularity/3.9.9:{CUDA_MODULE}'", modules_text)
+        self.assertIn("containerOptions = { ['gpu', 'cuda'].contains", modules_text)
+        self.assertIn("? '--nv' : ''", modules_text)
+        self.assertNotIn("deskew_runtime", modules_text)
+        self.assertIn(f"CONTAINER_ENV_PREFIX = '{CONTAINER_ENV_PREFIX}'", modules_text)
+        self.assertIn('export PATH="${CONTAINER_ENV_PREFIX}/bin:\\${PATH}"', modules_text)
+        self.assertTrue((ROOT / "workflow/images/deskew-gpu/Dockerfile").exists())
+        self.assertTrue((ROOT / "workflow/images/deskew-gpu/environment.yml").exists())
+        self.assertTrue((ROOT / "workflow/images/deskew-gpu/build-deskew-image.sh").exists())
 
     def test_deskew_publishes_terminal_output_without_copying_tree(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
@@ -140,7 +166,7 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertNotIn("'ome_zarr'", main_text)
         self.assertNotIn("'ome_zarr'", config_text)
         self.assertNotIn("'ome_zarr'", modules_text)
-        self.assertIn("EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)", main_text)
+        self.assertIn("EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats)", main_text)
         self.assertNotIn("if (params.output_formats", main_text)
         self.assertIn("enabled: false", modules_text)
         self.assertIn('path "deskewed_tiff", optional: true, emit: exported_output', modules_text)
@@ -161,46 +187,55 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("deskewed_ozx", modules_text)
         self.assertIn("output_dir=deskewed_ozx", modules_text)
 
-    def test_workflow_can_reuse_prebuilt_deskew_runtime(self):
+    def test_workflow_does_not_reuse_or_build_conda_runtime(self):
         main_text = (ROOT / "workflow/main.nf").read_text(encoding="utf-8")
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
+        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
+        schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
 
-        self.assertIn("deskew_runtime_dir = ''", config_text)
-        self.assertIn("params.deskew_runtime_dir", main_text)
-        self.assertIn("BUILD_DESKEW_CONTAINER()", main_text)
-        self.assertIn("file(params.deskew_runtime_dir, checkIfExists: true)", main_text)
+        self.assertNotIn("deskew_runtime_dir", config_text)
+        self.assertNotIn("deskew_runtime_dir", schema)
+        self.assertNotIn("params.deskew_runtime_dir", main_text)
+        self.assertNotIn("BUILD_DESKEW_CONTAINER", main_text)
 
-    def test_workflow_can_export_built_deskew_runtime_for_deconvolution(self):
+    def test_workflow_does_not_export_runtime_for_deconvolution(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
         package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
         schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
 
-        self.assertIn("export_deskew_runtime = false", config_text)
-        self.assertIn("params.export_deskew_runtime", modules_text)
-        self.assertIn('publishDir "${params.output_dir}", mode: \'copy\', pattern: \'deskew_runtime\'', modules_text)
-        self.assertIn("enabled: params.export_deskew_runtime.toString() == 'true'", modules_text)
-        self.assertIn("export_deskew_runtime", schema)
-        self.assertEqual(schema["export_deskew_runtime"]["type"], "select")
-        self.assertEqual(schema["export_deskew_runtime"]["default"], "false")
-        self.assertEqual([choice[0] for choice in schema["export_deskew_runtime"]["choices"]], ["false", "true"])
+        self.assertNotIn("export_deskew_runtime", config_text)
+        self.assertNotIn("export_deskew_runtime", modules_text)
+        self.assertNotIn("export_deskew_runtime", schema)
+        self.assertNotIn("pattern: 'deskew_runtime'", modules_text)
 
-    def test_pipeline_maps_exported_runtime_to_deconvolution_runtime_parameter(self):
-        pipeline = yaml.safe_load((ROOT / "deskew_decon_neuroglancer_pipeline.yml").read_text(encoding="utf-8"))
-        first_dependency = pipeline["dependencies"][0]
-        mappings = {(mapping["source"], mapping["target"]) for mapping in first_dependency["mappings"]}
-
-        self.assertEqual(first_dependency["source_workflow"], 101)
-        self.assertEqual(first_dependency["target_workflow"], 102)
-        self.assertIn(("Top_shear/*.ome.zarr", "input"), mappings)
-        self.assertIn(("deskew_runtime", "decon_runtime_dir"), mappings)
-
-    def test_processes_accept_runtime_root_or_direct_conda_env(self):
+    def test_processes_do_not_accept_host_runtime_root_or_direct_conda_env(self):
         modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
 
-        self.assertIn("${deskew_runtime}/deskew_env/bin", modules_text)
-        self.assertIn("${deskew_runtime}/bin", modules_text)
-        self.assertIn("CONDA_PREFIX", modules_text)
+        self.assertNotIn("${deskew_runtime}/deskew_env/bin", modules_text)
+        self.assertNotIn("${deskew_runtime}/bin", modules_text)
+        self.assertNotIn("deskew_env", modules_text)
+
+    def test_runtime_builder_docs_removed(self):
+        checked = [
+            ROOT / "astrocyte_pkg.yml",
+            ROOT / "README.md",
+            ROOT / "docs" / "workflow-overview.md",
+            ROOT / "docs" / "profiles-and-parameters.md",
+            ROOT / "docs" / "outputs-and-troubleshooting.md",
+        ]
+        forbidden = [
+            "deskew_runtime_dir",
+            "export_deskew_runtime",
+            "BUILD_DESKEW_CONTAINER",
+            "conda runtime",
+            "built deskew runtime",
+        ]
+
+        for path in checked:
+            text = path.read_text(encoding="utf-8")
+            for value in forbidden:
+                self.assertNotIn(value, text, msg=f"{value!r} remained in {path}")
 
     def test_stage_deskew_input_uses_super_queue(self):
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
@@ -571,15 +606,6 @@ class DeskewWiringTest(unittest.TestCase):
             [choice[0] for choice in schema["deskew_output_dtype"]["choices"]],
             ["uint16", "float32"],
         )
-
-    def test_deskew_runtime_includes_decon_dependencies(self):
-        conda_text = (ROOT / "workflow/envs/deskew-conda.txt").read_text(encoding="utf-8")
-        pip_text = (ROOT / "workflow/envs/deskew-pip-requirements.txt").read_text(encoding="utf-8")
-
-        self.assertIn("cudadecon=0.7.0", conda_text)
-        self.assertIn("pycudadecon=0.5.1", conda_text)
-        self.assertIn("psfmodels", pip_text)
-
 
 def load_export_module():
     script_path = SCRIPTS / "export_ome_zarr_to_tiff.py"

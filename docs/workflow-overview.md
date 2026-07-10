@@ -4,11 +4,15 @@ The deskew package contains only the deskew half of the original combined
 workflow.
 
 ```text
-BUILD_DESKEW_CONTAINER
 STAGE_DESKEW_INPUT
 DESKEW
 EXPORT_OUTPUT_FORMAT
 ```
+
+All processes run in the BioHPC GitLab container
+`git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
+GPU deskew loads `cuda/11.8.0` and passes Singularity `--nv` for GPU backend
+runs.
 
 `STAGE_DESKEW_INPUT` normalizes selected image files to OME-Zarr and preserves
 original filenames in `original_filenames.tsv`. `DESKEW` reads those normalized
@@ -21,9 +25,3 @@ Deskew OME-Zarr data inside each `.ozx` archive is written in `z, y, x` order
 as multiscale pyramids. Level `0` is full resolution; levels `1` through `4`
 downsample the axes named `y` and `x` by `2x`, `4x`, `8x`, and `16x` while
 preserving the axis named `z`.
-
-The conda runtime built by `BUILD_DESKEW_CONTAINER` includes the deconvolution
-dependencies as well. Integrated pipelines can pass that runtime directory into
-`deconvolution-gpu` with `decon_runtime_dir`. Set `export_deskew_runtime` to
-`true` when the runtime should be copied into the published output for that
-handoff.

@@ -1,7 +1,6 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-include { BUILD_DESKEW_CONTAINER } from './modules'
 include { STAGE_DESKEW_INPUT } from './modules'
 include { DESKEW } from './modules'
 include { EXPORT_OUTPUT_FORMAT } from './modules'
@@ -77,14 +76,6 @@ def requireSupplied(name, value, context) {
 }
 
 workflow {
-    if (isSupplied(params.deskew_runtime_dir)) {
-        log.info "Using prebuilt deskew runtime: ${params.deskew_runtime_dir}"
-        deskew_container_ch = Channel.value(file(params.deskew_runtime_dir, checkIfExists: true))
-    } else {
-        BUILD_DESKEW_CONTAINER()
-        deskew_container_ch = BUILD_DESKEW_CONTAINER.out.image
-    }
-
     input_patterns = normalizeInputPatterns(params.input, workflow.commandLine)
     if (input_patterns) {
         log.info "Selected ${input_patterns.size()} input image(s): ${input_patterns.join(', ')}"
@@ -92,7 +83,7 @@ workflow {
             .fromList(input_patterns)
             .map { input_pattern -> file(resolveInputPattern(input_pattern), checkIfExists: true) }
             .collect()
-        STAGE_DESKEW_INPUT(input_files_ch, deskew_container_ch)
+        STAGE_DESKEW_INPUT(input_files_ch)
         deskew_input_ch = STAGE_DESKEW_INPUT.out.deskew_input_dir
         deskew_cell_name = ''
     } else {
@@ -108,9 +99,8 @@ workflow {
         requireSupplied('dz', params.dz, 'deskew runs'),
         params.angle,
         params.flip,
-        params.output_dir,
-        deskew_container_ch
+        params.output_dir
     )
 
-    EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats, deskew_container_ch)
+    EXPORT_OUTPUT_FORMAT(DESKEW.out.deskewed_path, params.output_formats)
 }

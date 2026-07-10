@@ -13,15 +13,12 @@ GPU and should be used when CUDA is unavailable.
 
 ## Runtime Environment
 
-The workflow builds its conda runtime from `workflow/envs/deskew-conda.txt` and
-`workflow/envs/deskew-pip-requirements.txt`. Visualization dependencies are not
-installed by this package.
-
-The runtime also includes the deconvolution dependencies so it can be reused by
-`deconvolution-gpu` when `decon_runtime_dir` points at the built deskew runtime.
-Set `export_deskew_runtime = true` to publish `deskew_runtime/` alongside
-`deskewed_ozx/` for an Astrocyte pipeline dependency. Leave it `false` for
-standalone deskew runs to avoid copying the large conda environment.
+The workflow runs in
+`git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
+BioHPC staging loads `singularity/3.9.9` and `cuda/11.8.0`, and the BioHPC
+workflow passes Singularity `--nv` for GPU backend runs so GPU jobs can see the
+host CUDA driver.
+Visualization dependencies are handled by a separate package.
 
 ## CPU/GPU Output Comparison
 

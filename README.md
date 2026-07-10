@@ -9,19 +9,17 @@ estimation and GPU deconvolution are needed.
 
 ## Pipeline
 
-1. `BUILD_DESKEW_CONTAINER` builds the per-run deskew conda runtime.
-2. `STAGE_DESKEW_INPUT` links selected files, preserves original filenames, and
+All workflow processes run in the BioHPC GitLab container
+`git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
+GPU deskew also loads the BioHPC `cuda/11.8.0` module and passes Singularity
+`--nv` for GPU backend runs so the container can access the host GPU stack.
+
+1. `STAGE_DESKEW_INPUT` links selected files, preserves original filenames, and
    normalizes supported images to `input_zarr/*.ome.zarr`.
-3. `DESKEW` writes task-local deskewed OME-Zarr volumes under `Top_shear/`.
-4. `EXPORT_OUTPUT_FORMAT` publishes zipped OME-Zarr archives under
+2. `DESKEW` writes task-local deskewed OME-Zarr volumes under `Top_shear/`.
+3. `EXPORT_OUTPUT_FORMAT` publishes zipped OME-Zarr archives under
    `deskewed_ozx/`. When `output_formats` is `tiff`, it also publishes one
    merged TIFF stack under `deskewed_tiff/`.
-
-The deskew runtime includes the deconvolution Python/CUDA dependencies so an
-integrated pipeline can pass the built `deskew_runtime` directory to
-`deconvolution-gpu --decon_runtime_dir` and avoid building a second conda
-environment. Set `--export_deskew_runtime true` to copy that runtime into the
-workflow output for downstream pipeline handoff.
 
 Successful runs automatically clean the Nextflow `work/` directory after
 publishing outputs. This avoids retaining task-local OME-Zarr copies and other

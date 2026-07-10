@@ -1,46 +1,13 @@
-process BUILD_DESKEW_CONTAINER {
-    tag "deskew_env"
-
-    cpus 2
-    memory '8 GB'
-    queue 'super'
-    publishDir "${params.output_dir}", mode: 'copy', pattern: 'deskew_runtime', enabled: params.export_deskew_runtime.toString() == 'true'
-
-    output:
-    path "deskew_runtime", emit: image
-
-    script:
-    """
-    set -euo pipefail
-    mkdir -p deskew_runtime
-
-    if ! command -v conda >/dev/null 2>&1; then
-        echo "ERROR: conda is required to build the deskew environment." >&2
-        exit 127
-    fi
-
-    export CONDA_PKGS_DIRS="\$PWD/.conda_pkgs"
-    conda create -y -p .conda_libmamba -c conda-forge "conda>=23.7" conda-libmamba-solver
-    .conda_libmamba/bin/python -m conda create -y --solver=libmamba \\
-        -p deskew_runtime/deskew_env \\
-        -c conda-forge \\
-        -c bioconda \\
-        --file "${projectDir}/envs/deskew-conda.txt"
-    deskew_runtime/deskew_env/bin/python -m pip install --constraint "${projectDir}/envs/deskew-pip-constraints.txt" -r "${projectDir}/envs/deskew-pip-requirements.txt"
-
-    if [ ! -x deskew_runtime/deskew_env/bin/python3 ] && [ ! -x deskew_runtime/deskew_env/bin/python ]; then
-        echo "ERROR: failed to build a usable deskew conda environment." >&2
-        exit 1
-    fi
-    """
-}
+def DESKEW_CONTAINER_IMAGE = 'git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0'
+def CONTAINER_ENV_PREFIX = '/opt/conda/envs/app'
 
 process STAGE_DESKEW_INPUT {
     tag "deskew_input"
+    module 'singularity/3.9.9'
+    container DESKEW_CONTAINER_IMAGE
 
     input:
     path input_files
-    path deskew_runtime
 
     output:
     path "input_zarr", emit: deskew_input_dir
@@ -60,17 +27,8 @@ process STAGE_DESKEW_INPUT {
     ${link_commands}
     ${metadata_commands}
 
-    if [ -x "${deskew_runtime}/deskew_env/bin/python3" ] || [ -x "${deskew_runtime}/deskew_env/bin/python" ]; then
-        export CONDA_PREFIX="${deskew_runtime}/deskew_env"
-    elif [ -x "${deskew_runtime}/bin/python3" ] || [ -x "${deskew_runtime}/bin/python" ]; then
-        export CONDA_PREFIX="${deskew_runtime}"
-    else
-        echo "ERROR: no supported deskew runtime found at ${deskew_runtime}" >&2
-        exit 1
-    fi
-    export CONDA_DEFAULT_ENV=deskew_env
-    export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
-    export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
+    export CONDA_PREFIX="${CONTAINER_ENV_PREFIX}"
+    export PATH="${CONTAINER_ENV_PREFIX}/bin:\${PATH}"
 
     python3 ${projectDir}/scripts/normalize_input_to_ome_zarr.py \\
         --input deskew_input \\
@@ -80,6 +38,9 @@ process STAGE_DESKEW_INPUT {
 
 process DESKEW {
     tag "${cell_name ?: 'deskew'}"
+    module 'singularity/3.9.9:cuda/11.8.0'
+    container DESKEW_CONTAINER_IMAGE
+    containerOptions = { ['gpu', 'cuda'].contains((params.deskew_backend ?: '').toString().trim().toLowerCase().replace('-', '_')) ? '--nv' : '' }
 
     publishDir "${params.output_dir}", mode: 'copy', enabled: false
 
@@ -92,7 +53,6 @@ process DESKEW {
     val angle
     val flip
     val output_dir
-    path deskew_runtime
 
     output:
     path "Top_shear", emit: deskewed_path
@@ -100,17 +60,8 @@ process DESKEW {
 
     script:
     """
-    if [ -x "${deskew_runtime}/deskew_env/bin/python3" ] || [ -x "${deskew_runtime}/deskew_env/bin/python" ]; then
-        export CONDA_PREFIX="${deskew_runtime}/deskew_env"
-    elif [ -x "${deskew_runtime}/bin/python3" ] || [ -x "${deskew_runtime}/bin/python" ]; then
-        export CONDA_PREFIX="${deskew_runtime}"
-    else
-        echo "ERROR: no supported deskew runtime found at ${deskew_runtime}" >&2
-        exit 1
-    fi
-    export CONDA_DEFAULT_ENV=deskew_env
-    export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
-    export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
+    export CONDA_PREFIX="${CONTAINER_ENV_PREFIX}"
+    export PATH="${CONTAINER_ENV_PREFIX}/bin:\${PATH}"
 
     python3 ${projectDir}/scripts/chunked_deskew.py \\
         --image_path "${image_path}" \\
@@ -132,13 +83,14 @@ process DESKEW {
 
 process EXPORT_OUTPUT_FORMAT {
     tag "${output_format}"
+    module 'singularity/3.9.9'
+    container DESKEW_CONTAINER_IMAGE
 
     publishDir "${params.output_dir}", mode: 'copy'
 
     input:
     path deskew_outputs
     val output_format
-    path deskew_runtime
 
     output:
     path "deskewed_tiff", optional: true, emit: exported_output
@@ -146,17 +98,8 @@ process EXPORT_OUTPUT_FORMAT {
 
     script:
     """
-    if [ -x "${deskew_runtime}/deskew_env/bin/python3" ] || [ -x "${deskew_runtime}/deskew_env/bin/python" ]; then
-        export CONDA_PREFIX="${deskew_runtime}/deskew_env"
-    elif [ -x "${deskew_runtime}/bin/python3" ] || [ -x "${deskew_runtime}/bin/python" ]; then
-        export CONDA_PREFIX="${deskew_runtime}"
-    else
-        echo "ERROR: no supported deskew runtime found at ${deskew_runtime}" >&2
-        exit 1
-    fi
-    export CONDA_DEFAULT_ENV=deskew_env
-    export PATH="\${CONDA_PREFIX}/bin:\${PATH}"
-    export LD_LIBRARY_PATH=\${CONDA_PREFIX}/lib:\${LD_LIBRARY_PATH:-}
+    export CONDA_PREFIX="${CONTAINER_ENV_PREFIX}"
+    export PATH="${CONTAINER_ENV_PREFIX}/bin:\${PATH}"
 
     output_dir=deskewed_ozx
     python3 ${projectDir}/scripts/export_ome_zarr_to_tiff.py \\

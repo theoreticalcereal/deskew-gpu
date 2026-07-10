@@ -5,7 +5,6 @@
 | Profile | Purpose |
 | --- | --- |
 | `light_sheet` | Uses the default ctASLM angle and flip settings. |
-| `conda_runtime` | Builds the workflow conda runtime inside the run directory. |
 
 ## Required Inputs
 
@@ -31,6 +30,11 @@ linear interpolation output as `float32` unless an integer `output_dtype` is
 requested.
 
 ## Runtime Backend
+
+The workflow always runs inside
+`git.biohpc.swmed.edu:5050/dean-lab/ctaslm2-deskew:0.1.0`.
+BioHPC staging loads `singularity/3.9.9` and `cuda/11.8.0`; GPU backend runs
+pass Singularity `--nv`.
 
 `deskew_backend` defaults to `cpu_blocked`. Use `gpu` or `cuda` to run the
 Numba CUDA backend and request one Slurm GPU. CPU runs always compute and write
