@@ -185,6 +185,18 @@ def _resolve_deskew_output_dtype(output_dtype: str | np.dtype) -> np.dtype:
     return dtype
 
 
+def _coerce_bool(value: bool | str | int) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
 def _cast_resampled_value(value: float, *, output_dtype: np.dtype) -> float | int:
     if np.issubdtype(output_dtype, np.integer):
         info = np.iinfo(output_dtype)
@@ -214,14 +226,15 @@ def _clearex_affine_geometry(
     dz: float,
     angle: float,
     flip: int,
+    affine_rotate: bool = False,
 ) -> ClearExAffineGeometry:
     z_size, y_size, x_size = (int(v) for v in source_shape_zyx)
     z_um, y_um, x_um = (float(dz), float(dx), float(dx))
     flip_sign = float(flip)
-    # This mode follows the ClearEx affine contract used for the current
-    # reference comparison: shear in physical YZ, then rotate around X.
+    # This follows ClearEx's shear-transform convention: shear in physical YZ.
+    # The additional X rotation is optional because it rotates the Z/Y view.
     shear_yz = flip_sign * math.sin(math.radians(float(angle)))
-    rotation_deg_x = -flip_sign * float(angle)
+    rotation_deg_x = -flip_sign * float(angle) if _coerce_bool(affine_rotate) else 0.0
     shear_matrix = np.asarray(
         [
             [1.0, 0.0, 0.0],
@@ -763,6 +776,7 @@ def _write_clearex_affine(
     z_chunk: int,
     pyramid_max_downsample: int,
     output_dtype: str | np.dtype = "uint16",
+    affine_rotate: bool = False,
 ) -> tuple[int, int, int]:
     start_time = time.perf_counter()
     target_dtype = _resolve_deskew_output_dtype(output_dtype)
@@ -776,6 +790,7 @@ def _write_clearex_affine(
         dz=float(dz),
         angle=float(angle),
         flip=int(flip),
+        affine_rotate=_coerce_bool(affine_rotate),
     )
     print(
         "ClearEx-affine CPU geometry: "
@@ -1060,6 +1075,7 @@ def _write_clearex_affine_gpu(
     deskew_prefetch: int,
     pyramid_max_downsample: int,
     output_dtype: str | np.dtype = "uint16",
+    affine_rotate: bool = False,
 ) -> tuple[int, int, int]:
     start_time = time.perf_counter()
     target_dtype = _resolve_deskew_output_dtype(output_dtype)
@@ -1074,6 +1090,7 @@ def _write_clearex_affine_gpu(
         dz=float(dz),
         angle=float(angle),
         flip=int(flip),
+        affine_rotate=_coerce_bool(affine_rotate),
     )
     print(
         "ClearEx-affine GPU geometry: "
@@ -1177,6 +1194,7 @@ def run_chunked_deskew(
     deskew_prefetch: int,
     pyramid_max_downsample: int,
     deskew_output_dtype: str = "uint16",
+    deskew_affine_rotate: bool | str = False,
 ) -> None:
     run_start = time.perf_counter()
     input_dir = _selected_input_dir(image_path, cell_name)
@@ -1218,6 +1236,7 @@ def run_chunked_deskew(
                 deskew_prefetch=int(deskew_prefetch),
                 pyramid_max_downsample=int(pyramid_max_downsample),
                 output_dtype=output_dtype,
+                affine_rotate=_coerce_bool(deskew_affine_rotate),
             )
             note_prefix = "ClearEx-affine GPU deskew output. "
             note_shape = f"output_zyx={output_shape}; "
@@ -1232,6 +1251,7 @@ def run_chunked_deskew(
                 z_chunk=int(z_chunk),
                 pyramid_max_downsample=int(pyramid_max_downsample),
                 output_dtype=output_dtype,
+                affine_rotate=_coerce_bool(deskew_affine_rotate),
             )
             note_prefix = "ClearEx-affine CPU deskew output. "
             note_shape = f"output_zyx={output_shape}; "
@@ -1308,6 +1328,11 @@ def main(argv: list[str] | None = None) -> None:
         choices=["uint16", "float32"],
         help="Output dtype; float32 matches ClearEx affine output and is only supported with clearex_affine",
     )
+    parser.add_argument(
+        "--deskew_affine_rotate",
+        default="false",
+        help="For clearex_affine, also rotate around X by -flip*angle after shearing.",
+    )
     args = parser.parse_args(argv)
     if args.cell_index:
         print("cell_index is accepted for compatibility but ignored by chunked deskew.", flush=True)
@@ -1325,6 +1350,7 @@ def main(argv: list[str] | None = None) -> None:
         deskew_prefetch=max(1, args.deskew_prefetch),
         pyramid_max_downsample=max(1, args.pyramid_max_downsample),
         deskew_output_dtype=args.deskew_output_dtype,
+        deskew_affine_rotate=_coerce_bool(args.deskew_affine_rotate),
     )
 
 

@@ -122,6 +122,14 @@ workflow_parameters:
       - [ 'uint16', 'uint16' ]
       - [ 'float32', 'float32' ]
 
+  - id: deskew_affine_rotate
+    type: boolean
+    required: false
+    default: false
+    description: |
+      For ClearEx affine geometry, also rotate around X by -flip*angle after
+      applying the Y/Z shear. Leave disabled for upright Z/Y viewing.
+
   - id: z_chunk
     type: integer
     required: false

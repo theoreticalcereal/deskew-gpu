@@ -77,6 +77,7 @@ process DESKEW {
         --z_chunk ${params.z_chunk} \\
         --deskew_prefetch ${params.deskew_prefetch} \\
         --pyramid_max_downsample ${params.pyramid_max_downsample} \\
+        --deskew_affine_rotate ${params.deskew_affine_rotate} \\
         --deskew_output_dtype ${params.deskew_output_dtype}
     """
 }

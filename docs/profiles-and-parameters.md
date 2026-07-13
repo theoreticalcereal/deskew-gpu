@@ -21,8 +21,11 @@ datasets acquired with different scanner geometry.
 
 `deskew_geometry` defaults to `top_view`, the MATLAB-compatible output geometry.
 Use `clearex_affine` to write a ClearEx-style physical affine output in `z, y,
-x` order. In that mode, `angle` and `flip` are converted to the ClearEx affine
-shear/rotation model and outputs are written as OME-Zarr.
+x` order. In that mode, `angle` and `flip` are converted to a ClearEx-style
+Y/Z shear coefficient and outputs are written as OME-Zarr. By default the
+affine path does not apply the extra X rotation, so Z/Y views remain upright.
+Set `deskew_affine_rotate = true` only when you want the older reference-style
+rotation by `-flip * angle` after shearing.
 
 `deskew_output_dtype` defaults to `uint16`. Use `float32` with
 `clearex_affine` geometry when comparing against ClearEx, because ClearEx keeps

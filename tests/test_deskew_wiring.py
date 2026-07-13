@@ -311,13 +311,28 @@ class DeskewWiringTest(unittest.TestCase):
             ["z", "y", "x"],
         )
 
-    def test_clearex_affine_geometry_matches_clearex_bounds_for_reference_slab(self):
+    def test_clearex_affine_geometry_shears_yz_without_rotation_by_default(self):
         geometry = _clearex_affine_geometry(
             source_shape_zyx=(500, 2024, 128),
             dx=0.168,
             dz=0.2,
             angle=45.0,
             flip=1,
+        )
+
+        self.assertEqual(geometry.output_shape_zyx, (500, 2444, 128))
+        self.assertEqual(geometry.applied_rotation_deg_xyz, (0.0, 0.0, 0.0))
+        self.assertAlmostEqual(geometry.shear_yz, 0.70710678118, places=6)
+        self.assertAlmostEqual(geometry.matrix_xyz[1, 2], 0.70710678118, places=6)
+
+    def test_clearex_affine_geometry_can_apply_reference_rotation(self):
+        geometry = _clearex_affine_geometry(
+            source_shape_zyx=(500, 2024, 128),
+            dx=0.168,
+            dz=0.2,
+            angle=45.0,
+            flip=1,
+            affine_rotate=True,
         )
 
         self.assertEqual(geometry.output_shape_zyx, (1305, 2148, 128))
@@ -576,6 +591,8 @@ class DeskewWiringTest(unittest.TestCase):
                 "4",
                 "--deskew_geometry",
                 "clearex_affine",
+                "--deskew_affine_rotate",
+                "true",
                 "--deskew_output_dtype",
                 "float32",
             ])
@@ -584,6 +601,7 @@ class DeskewWiringTest(unittest.TestCase):
 
         self.assertEqual(calls[0]["pyramid_max_downsample"], 4)
         self.assertEqual(calls[0]["deskew_geometry"], "clearex_affine")
+        self.assertTrue(calls[0]["deskew_affine_rotate"])
         self.assertEqual(calls[0]["deskew_output_dtype"], "float32")
 
     def test_nextflow_passes_deskew_geometry_parameter(self):
@@ -592,6 +610,17 @@ class DeskewWiringTest(unittest.TestCase):
 
         self.assertIn("deskew_geometry = 'top_view'", config_text)
         self.assertIn("--deskew_geometry ${params.deskew_geometry}", modules_text)
+
+    def test_nextflow_passes_clearex_affine_rotation_parameter(self):
+        config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
+        modules_text = (ROOT / "workflow/modules.nf").read_text(encoding="utf-8")
+        package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
+        schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
+
+        self.assertIn("deskew_affine_rotate = false", config_text)
+        self.assertIn("--deskew_affine_rotate ${params.deskew_affine_rotate}", modules_text)
+        self.assertIn("deskew_affine_rotate", schema)
+        self.assertFalse(schema["deskew_affine_rotate"]["default"])
 
     def test_deskew_output_dtype_is_exposed_to_nextflow_and_astrocyte(self):
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")

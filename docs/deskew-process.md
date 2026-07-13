@@ -13,7 +13,10 @@ output tile.
 
 The ClearEx-affine implementation is self-contained in this workflow. It does
 not import ClearEx at runtime; the affine geometry and sampler behavior are
-implemented locally for reproducible Nextflow runs.
+implemented locally for reproducible Nextflow runs. ClearEx-affine deskew
+applies the Y/Z shear without an extra X rotation by default. Set
+`deskew_affine_rotate` to apply the older reference-style `-flip * angle`
+rotation after shearing.
 
 The implementation computes one or more output X pages internally, but
 top-shear OME-Zarr output is written and labelled in `z, y, x` order. TIFF
