@@ -620,7 +620,12 @@ class DeskewWiringTest(unittest.TestCase):
         self.assertIn("deskew_affine_rotate = false", config_text)
         self.assertIn("--deskew_affine_rotate ${params.deskew_affine_rotate}", modules_text)
         self.assertIn("deskew_affine_rotate", schema)
-        self.assertFalse(schema["deskew_affine_rotate"]["default"])
+        self.assertEqual(schema["deskew_affine_rotate"]["type"], "select")
+        self.assertEqual(schema["deskew_affine_rotate"]["default"], "false")
+        self.assertEqual(
+            [choice[0] for choice in schema["deskew_affine_rotate"]["choices"]],
+            ["false", "true"],
+        )
 
     def test_deskew_output_dtype_is_exposed_to_nextflow_and_astrocyte(self):
         config_text = (ROOT / "workflow/configs/nextflow.config").read_text(encoding="utf-8")
