@@ -41,12 +41,11 @@ Set `--deskew_geometry clearex_affine` to write a ClearEx-compatible physical
 affine output instead of the MATLAB-style top view. For ClearEx validation runs,
 also set `--deskew_output_dtype float32`; this preserves interpolated values and
 matches ClearEx's default shear-transform output dtype. ClearEx-affine output
-applies the Y/Z shear without an extra X rotation by default, which keeps Z/Y
-views upright in Neuroglancer. Set `--deskew_affine_rotate true` only for
-reference-style runs that should rotate by `-flip * angle` after shearing. The
-ClearEx-affine GPU sampler uses the same half-voxel image-domain boundary
-convention as ANTs/ClearEx so edge slices compare consistently with the
-reference.
+applies the Y/Z shear and rotates by `-flip * angle` by default so Z/Y views are
+deskewed rather than shear-only. Set `--deskew_affine_rotate false` only for
+shear-only affine validation runs. The ClearEx-affine GPU sampler uses the same
+half-voxel image-domain boundary convention as ANTs/ClearEx so edge slices
+compare consistently with the reference.
 
 ## Manual Run
 

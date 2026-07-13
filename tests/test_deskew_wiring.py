@@ -311,34 +311,34 @@ class DeskewWiringTest(unittest.TestCase):
             ["z", "y", "x"],
         )
 
-    def test_clearex_affine_geometry_shears_yz_without_rotation_by_default(self):
+    def test_clearex_affine_geometry_rotates_yz_by_default(self):
         geometry = _clearex_affine_geometry(
             source_shape_zyx=(500, 2024, 128),
             dx=0.168,
             dz=0.2,
             angle=45.0,
             flip=1,
-        )
-
-        self.assertEqual(geometry.output_shape_zyx, (500, 2444, 128))
-        self.assertEqual(geometry.applied_rotation_deg_xyz, (0.0, 0.0, 0.0))
-        self.assertAlmostEqual(geometry.shear_yz, 0.70710678118, places=6)
-        self.assertAlmostEqual(geometry.matrix_xyz[1, 2], 0.70710678118, places=6)
-
-    def test_clearex_affine_geometry_can_apply_reference_rotation(self):
-        geometry = _clearex_affine_geometry(
-            source_shape_zyx=(500, 2024, 128),
-            dx=0.168,
-            dz=0.2,
-            angle=45.0,
-            flip=1,
-            affine_rotate=True,
         )
 
         self.assertEqual(geometry.output_shape_zyx, (1305, 2148, 128))
         self.assertEqual(geometry.applied_rotation_deg_xyz, (-45.0, 0.0, 0.0))
         self.assertAlmostEqual(geometry.shear_yz, 0.70710678118, places=6)
         self.assertAlmostEqual(geometry.matrix_xyz[1, 2], 1.20710678118, places=6)
+
+    def test_clearex_affine_geometry_can_disable_reference_rotation(self):
+        geometry = _clearex_affine_geometry(
+            source_shape_zyx=(500, 2024, 128),
+            dx=0.168,
+            dz=0.2,
+            angle=45.0,
+            flip=1,
+            affine_rotate=False,
+        )
+
+        self.assertEqual(geometry.output_shape_zyx, (500, 2444, 128))
+        self.assertEqual(geometry.applied_rotation_deg_xyz, (0.0, 0.0, 0.0))
+        self.assertAlmostEqual(geometry.shear_yz, 0.70710678118, places=6)
+        self.assertAlmostEqual(geometry.matrix_xyz[1, 2], 0.70710678118, places=6)
 
     def test_clearex_affine_sampler_uses_half_voxel_image_domain(self):
         volume = np.asarray([[[10.0, 20.0]]], dtype=np.float32)
@@ -617,14 +617,14 @@ class DeskewWiringTest(unittest.TestCase):
         package = yaml.safe_load((ROOT / "astrocyte_pkg.yml").read_text(encoding="utf-8"))
         schema = {entry["id"]: entry for entry in package["workflow_parameters"]}
 
-        self.assertIn("deskew_affine_rotate = false", config_text)
+        self.assertIn("deskew_affine_rotate = true", config_text)
         self.assertIn("--deskew_affine_rotate ${params.deskew_affine_rotate}", modules_text)
         self.assertIn("deskew_affine_rotate", schema)
         self.assertEqual(schema["deskew_affine_rotate"]["type"], "select")
-        self.assertEqual(schema["deskew_affine_rotate"]["default"], "false")
+        self.assertEqual(schema["deskew_affine_rotate"]["default"], "true")
         self.assertEqual(
             [choice[0] for choice in schema["deskew_affine_rotate"]["choices"]],
-            ["false", "true"],
+            ["true", "false"],
         )
 
     def test_deskew_output_dtype_is_exposed_to_nextflow_and_astrocyte(self):

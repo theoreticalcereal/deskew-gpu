@@ -226,13 +226,13 @@ def _clearex_affine_geometry(
     dz: float,
     angle: float,
     flip: int,
-    affine_rotate: bool = False,
+    affine_rotate: bool = True,
 ) -> ClearExAffineGeometry:
     z_size, y_size, x_size = (int(v) for v in source_shape_zyx)
     z_um, y_um, x_um = (float(dz), float(dx), float(dx))
     flip_sign = float(flip)
-    # This follows ClearEx's shear-transform convention: shear in physical YZ.
-    # The additional X rotation is optional because it rotates the Z/Y view.
+    # This follows ClearEx's shear-transform convention: shear in physical YZ,
+    # then rotate by default so Z/Y views are not left in shear-only geometry.
     shear_yz = flip_sign * math.sin(math.radians(float(angle)))
     rotation_deg_x = -flip_sign * float(angle) if _coerce_bool(affine_rotate) else 0.0
     shear_matrix = np.asarray(
@@ -776,7 +776,7 @@ def _write_clearex_affine(
     z_chunk: int,
     pyramid_max_downsample: int,
     output_dtype: str | np.dtype = "uint16",
-    affine_rotate: bool = False,
+    affine_rotate: bool = True,
 ) -> tuple[int, int, int]:
     start_time = time.perf_counter()
     target_dtype = _resolve_deskew_output_dtype(output_dtype)
@@ -1075,7 +1075,7 @@ def _write_clearex_affine_gpu(
     deskew_prefetch: int,
     pyramid_max_downsample: int,
     output_dtype: str | np.dtype = "uint16",
-    affine_rotate: bool = False,
+    affine_rotate: bool = True,
 ) -> tuple[int, int, int]:
     start_time = time.perf_counter()
     target_dtype = _resolve_deskew_output_dtype(output_dtype)
@@ -1194,7 +1194,7 @@ def run_chunked_deskew(
     deskew_prefetch: int,
     pyramid_max_downsample: int,
     deskew_output_dtype: str = "uint16",
-    deskew_affine_rotate: bool | str = False,
+    deskew_affine_rotate: bool | str = True,
 ) -> None:
     run_start = time.perf_counter()
     input_dir = _selected_input_dir(image_path, cell_name)
@@ -1330,7 +1330,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--deskew_affine_rotate",
-        default="false",
+        default="true",
         help="For clearex_affine, also rotate around X by -flip*angle after shearing.",
     )
     args = parser.parse_args(argv)
